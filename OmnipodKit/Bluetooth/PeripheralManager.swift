@@ -670,16 +670,23 @@ extension PeripheralManager {
         self.log.default("Scheduling session %{public}@", name)
 
         let enqueuedAt = Date()
+        // Count the session from when it is queued, so that going to the background doesn't cancel
+        // the connect it is waiting on.
+        let bluetoothManager = self.bluetoothManager
+        bluetoothManager?.beginCommandSession()
         sessionQueue.addOperation({ [weak self] in
-            self?.perform(enqueuedAt: enqueuedAt) { (manager) in
-                manager.bluetoothManager?.beginCommandSession()
-                defer { manager.bluetoothManager?.endCommandSession() }
+            guard let self = self else {
+                bluetoothManager?.endCommandSession()
+                return
+            }
+            self.perform(enqueuedAt: enqueuedAt) { (manager) in
+                defer { bluetoothManager?.endCommandSession() }
                 manager.log.default("======================== %{public}@ ===========================", name)
                 block()
                 manager.log.default("------------------------ %{public}@ ---------------------------", name)
-                self?.idleStart = Date()
-                self?.log.default("Start of idle at %{public}@", String(describing: self?.idleStart))
-                self?.scheduleIdleDisconnectIfNeeded()
+                manager.idleStart = Date()
+                manager.log.default("Start of idle at %{public}@", String(describing: manager.idleStart))
+                manager.scheduleIdleDisconnectIfNeeded()
             }
         })
     }
