@@ -2362,10 +2362,12 @@ extension OmniPumpManager {
     }
 
     // A host asked the pump to provide the BLE heartbeat on a combination needing the eager-connect
-    // mitigation. The usual StartDelay probe can't be used there, so wakes are driven by link drops
-    // instead (see BluetoothManager.isEagerHeartbeatMode) — workable, but less regular.
+    // mitigation, while a Pod Keep Alive mode holds the pod connected in the background. The usual
+    // StartDelay probe can't be used there, so wakes are driven by link drops instead
+    // (see BluetoothManager.isEagerHeartbeatMode) — workable, but less regular.
     var bleHeartbeatDegradedForThisPod: Bool {
-        guard usingInPlayPod == true, UIDevice.hasPossibleInPlayBLEIssues else { return false }
+        guard usingInPlayPod == true, UIDevice.hasPossibleInPlayBLEIssues,
+              state.podKeepAlive.keepsPodConnectedInBackground else { return false }
         if let blePodComms = podComms as? BlePodComms {
             return blePodComms.isBLEHeartbeatRequested
         }

@@ -305,14 +305,15 @@ class BluetoothManager: NSObject {
     }
 
     /// Connect options for eager connects (auto-reconnect experiment when enabled and available).
-    /// Disconnect-driven heartbeat mode: a wedge-prone pod on an affected phone whose host needs the
-    /// pump to provide background wakes. Here we deliberately do NOT use auto-reconnect — instead we let
+    /// Disconnect-driven heartbeat mode: a wedge-prone pod on an affected phone, held connected in the
+    /// background by a Pod Keep Alive mode, whose host needs the pump to provide background wakes
+    /// (otherwise the StartDelay probe provides them). Here we deliberately do NOT use auto-reconnect — instead we let
     /// the pod hang up on its own ~180s inactivity timer, take CoreBluetooth's didDisconnect as the wake
     /// (State Restoration delivers it to a suspended app), eagerly reconnect (re-arming the next cycle),
     /// and fire the heartbeat if the host's CGM data has gone stale. That yields a regular ~3min wake
     /// cadence, versus the irregular ~9min observed when auto-reconnect silently holds the link up.
     var isEagerHeartbeatMode: Bool {
-        guard heartbeatEnabled else { return false }
+        guard heartbeatEnabled, podKeepAliveKeepsConnectedInBackground else { return false }
         guard let peripheral = keepAlivePeripheral else { return false }
         return shouldUseEagerConnect(for: peripheral)
     }
@@ -321,12 +322,13 @@ class BluetoothManager: NSObject {
         // Disconnect-driven heartbeat mode owns its own reconnects — auto-reconnect would silently
         // re-establish the link and rob us of the wake.
         if isEagerHeartbeatMode { return nil }
-        // BACKGROUND: ask the system to keep the link up for us — it can re-establish while the app is
-        // suspended, which no app-side timer can do.
+        // BACKGROUND with a Pod Keep Alive mode holding the link: ask the system to keep it up for us — it
+        // can re-establish while the app is suspended, which no app-side timer can do. Without one we
+        // connect on demand, and a held-up link is what we're avoiding.
         // FOREGROUND: do NOT use auto-reconnect. The user may be waiting to bolus, and the system's
         // silent reacquisition (~27s median measured) is far slower than our eager cancel/retry cycle
         // (~1.3s); an armed auto-reconnect would just compete with the watchdog.
-        if isAppForeground { return nil }
+        if isAppForeground || !podKeepAliveKeepsConnectedInBackground { return nil }
         if #available(iOS 17.0, *), BluetoothManager.eagerAutoReconnectEnabled {
             return [CBConnectPeripheralOptionEnableAutoReconnect: true]
         }
@@ -373,22 +375,6 @@ class BluetoothManager: NSObject {
     /// resets `idleStart`, so the disconnect lands this many seconds after the LAST command.
     static var idleDisconnectSeconds: TimeInterval {
         (UserDefaults.standard.object(forKey: "OmnipodKit.idleDisconnectSeconds") as? Double) ?? 4
-    }
-
-    /// Idle-disconnect delay for eager-gated pods (InPlay + affected iPhone), where every reconnect
-    /// risks a wedge storm (median ~10s, worst ~30s+ measured). Sized ABOVE the observed inter-cycle
-    /// command cadence (~3 min), so the connection is effectively held continuously while looping and
-    /// each cycle's first command lands on a live link (a 60s window measured on 2026-08-20 hung up
-    /// ~1 min before the next cycle every time — paying a storm per cycle anyway). If cycles stop
-    /// (CGM gap, app suspended), the pod still disconnects at this deadline and the background
-    /// heartbeat probe re-arms as designed.
-    ///
-    /// Default 3600 (hold-while-looping): field data (2026-08-20) showed cycle cadence varies 3-5 min,
-    /// and both 60s and 240s windows repeatedly hung up <1 min before the next cycle — paying a wedge
-    /// storm each time for nothing. Every command resets the timer, so any activity within the hour
-    /// keeps the link; a true idle hour still releases the pod (advertising/probe/fault-scan resume).
-    static var eagerIdleDisconnectSeconds: TimeInterval {
-        (UserDefaults.standard.object(forKey: "OmnipodKit.eagerIdleDisconnectSeconds") as? Double) ?? 3600
     }
 
     /// Candidate DASH alarm-state service UUIDs to filter on in low-power mode.
@@ -480,18 +466,11 @@ class BluetoothManager: NSObject {
     /// True when the pod should be HELD connected rather than idle/background-disconnected — the gate that
     /// suppresses connect-on-demand's disconnects. True while the app is foregrounded (foreground
     /// keep-alive), OR whenever a *background* Pod Keep Alive mode (silentTune / rileyLink — DASH only) is
-    /// selected. Those modes exist for iPhone 16/17e + InPlay (Atlas) DASH pods where a disconnect→reconnect
-    /// is unreliable, so the pod must stay connected and the keep-alive's periodic status refresh maintains
-    /// the link. When Pod Keep Alive is `.disabled` (the default) OR `.whenOpen`, this collapses to exactly
-    /// `isAppForeground` — i.e. no change from the validated connect-on-demand behavior. Read from
-    /// managerQueue and cross-queue by PeripheralManager (benign bool race).
+    /// selected. Otherwise the background is connect-on-demand on every phone/pod combo, including
+    /// InPlay pods on iPhone 16/17e: holding their link open in the background led to 0xCB (203) pod faults.
+    /// Read from managerQueue and cross-queue by PeripheralManager (benign bool race).
     var shouldHoldConnection: Bool {
         if isAppForeground { return true }
-        // Eager-gated pods (InPlay + affected iPhone): reconnecting costs a wedge storm, and the pod
-        // releases the link itself after ~180s of inactivity anyway — so never tear it down on
-        // backgrounding. The link is kept via CBConnectPeripheralOptionEnableAutoReconnect (issued on
-        // background connects), which restores it without needing app CPU while suspended.
-        if let peripheral = keepAlivePeripheral, shouldUseEagerConnect(for: peripheral) { return true }
         return podKeepAliveKeepsConnectedInBackground
     }
 
@@ -508,8 +487,8 @@ class BluetoothManager: NSObject {
     private var heartbeatEnabled = false
 
     /// Whether a host has asked the pump to provide the BLE heartbeat. Exposed so the pump manager can
-    /// warn when this is requested on a wedge-prone pod/phone combo, where we hold the connection (and
-    /// so the StartDelay probe — which requires a DISCONNECTED pod — can never run).
+    /// warn when this is requested on a wedge-prone pod/phone combo held connected by a Pod Keep Alive
+    /// mode (so the StartDelay probe — which requires a DISCONNECTED pod — can never run).
     var isBLEHeartbeatRequested: Bool { heartbeatEnabled }
 
     /// The delayed-connect (StartDelay) heartbeat probe runs when Loop asks the pump to provide the BLE
@@ -1166,6 +1145,7 @@ class BluetoothManager: NSObject {
         if peripheral.state == .connected || peripheral.state == .connecting {
             log.default("[connectOnDemand] background — disconnecting, resuming heartbeat probe")
             connectionDelegate?.omnipodLogDeviceEvent("[connectOnDemand] background — disconnecting, resuming heartbeat probe")
+            disarmConnectWatchdog(peripheral)                // or it would retry the connect we're cancelling
             manager.cancelPeripheralConnection(peripheral)   // didDisconnect resumes scan + arms probe
         } else {
             resumeScanIfNeeded()                             // fault-listener scan while idle
@@ -1700,11 +1680,11 @@ extension BluetoothManager: CBCentralManagerDelegate {
         // Eager-gated pods: the recovery strategy differs by app state.
         //  - FOREGROUND: the user may be waiting to bolus — reconnect eagerly (direct connect + fast
         //    watchdog cancel/retry), no auto-reconnect.
-        //  - BACKGROUND: we may be suspended at any moment, so no app-side timer can be trusted. Issue a
-        //    standing connect carrying CBConnectPeripheralOptionEnableAutoReconnect and let the system
-        //    re-establish the link (measured ~27s median) with no app CPU required. This is what keeps
-        //    the pod connected through its ~180s inactivity hangups while backgrounded.
-        if shouldUseEagerConnect(for: peripheral) {
+        //  - BACKGROUND with a Pod Keep Alive mode: we may be suspended at any moment, so no app-side timer
+        //    can be trusted. Issue a standing connect carrying CBConnectPeripheralOptionEnableAutoReconnect
+        //    and let the system re-establish the link (measured ~27s median) with no app CPU required.
+        //  - BACKGROUND otherwise: connect on demand, like any other pod (falls through to the idle path).
+        if shouldUseEagerConnect(for: peripheral) && shouldHoldConnection {
             if isAppForeground {
                 log.default("[eager] drop while foreground — reconnecting eagerly")
                 connectionDelegate?.omnipodLogDeviceEvent("[eager] drop while foreground — reconnecting eagerly")
