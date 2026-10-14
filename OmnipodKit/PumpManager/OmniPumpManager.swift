@@ -603,7 +603,7 @@ extension OmniPumpManager {
             return HKDevice(
                 name: pluginIdentifier,
                 manufacturer: "Insulet",
-                model: state.podType.description,
+                model: state.podType.modelName,
                 hardwareVersion: String(state.podType.rawValue),
                 firmwareVersion: podState.firmwareVersion + " " + podState.iFirmwareVersion,
                 softwareVersion: String(OmnipodKitVersionNumber),
@@ -614,7 +614,7 @@ extension OmniPumpManager {
             return HKDevice(
                 name: pluginIdentifier,
                 manufacturer: "Insulet",
-                model: state.podType.description,
+                model: state.podType.modelName,
                 hardwareVersion: nil,
                 firmwareVersion: nil,
                 softwareVersion: String(OmnipodKitVersionNumber),
