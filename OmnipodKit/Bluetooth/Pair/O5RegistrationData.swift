@@ -9,14 +9,47 @@ import Foundation
 import CryptoSwift
 
 
+enum O5RegistrationSource: String {
+    case compiled
+    case imported
+    case downloaded
+}
+
 struct O5RegistrationData {
     private static var _registry: [UInt32: O5RegistrationData] = [:]
+    private static var _sources: [UInt32: O5RegistrationSource] = [:]
     private static let lock = NSLock()
 
     static func install(_ value: O5RegistrationData) {
         lock.lock()
         defer { lock.unlock() }
         _registry[value.controllerId] = value
+    }
+
+    static func install(_ value: O5RegistrationData, source: O5RegistrationSource) {
+        lock.lock()
+        defer { lock.unlock() }
+        _registry[value.controllerId] = value
+        _sources[value.controllerId] = source
+    }
+
+    static func markSource(_ controllerId: UInt32, _ source: O5RegistrationSource) {
+        lock.lock()
+        defer { lock.unlock() }
+        _sources[controllerId] = source
+    }
+
+    static func source(for controllerId: UInt32) -> O5RegistrationSource? {
+        lock.lock()
+        defer { lock.unlock() }
+        return _sources[controllerId]
+    }
+
+    static func remove(controllerId: UInt32) {
+        lock.lock()
+        defer { lock.unlock() }
+        _registry.removeValue(forKey: controllerId)
+        _sources.removeValue(forKey: controllerId)
     }
 
     static func get(_ controllerId: UInt32) -> O5RegistrationData? {
@@ -51,9 +84,45 @@ struct O5RegistrationData {
         return _registry.isEmpty
     }
 
+    static var deletableCert: O5RegistrationData? {
+        lock.lock()
+        defer { lock.unlock() }
+        for source in _sources {
+            if source.value != .compiled {
+                return _registry[source.key]
+            }
+        }
+        return nil
+    }
+
+    func toJSON() -> [String: Any] {
+        return [
+            "controllerId": NSNumber(value: controllerId),
+            "privateKey": privateKeyHex,
+            "publicKey": publicKeyHex,
+            "intermediateCA": intermediateCABase64,
+            "tlsCertificate": tlsCertificateBase64,
+        ]
+    }
+
+    static func fromJSON(_ json: [String: Any]) -> O5RegistrationData? {
+        guard let controllerId = (json["controllerId"] as? NSNumber)?.uint32Value,
+              let privateKeyHex = json["privateKey"] as? String,
+              let publicKeyHex = json["publicKey"] as? String,
+              let intermediateCABase64 = json["intermediateCA"] as? String,
+              let tlsCertificateBase64 = json["tlsCertificate"] as? String
+        else { return nil }
+        return O5RegistrationData(
+            controllerId: controllerId,
+            privateKeyHex: privateKeyHex,
+            publicKeyHex: publicKeyHex,
+            intermediateCABase64: intermediateCABase64,
+            tlsCertificateBase64: tlsCertificateBase64
+        )
+    }
+
     // MARK: - Identity
 
-    /// Becomes the 4-byte controller ID.
     let controllerId: UInt32
 
     // MARK: - Keypair (main signing key private + public)
@@ -65,7 +134,6 @@ struct O5RegistrationData {
 
     let intermediateCABase64: String
     let tlsCertificateBase64: String
-
 
     // MARK: - Convenience
 

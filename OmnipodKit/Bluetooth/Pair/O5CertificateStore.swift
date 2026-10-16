@@ -37,6 +37,7 @@ class O5CertificateStore {
     /// Randomly picks an available O5 controllerId with or 0 if none available
     static var pickControllerId: UInt32 {
         loadOptionalO5Data()
+        O5CertificateKeychain.restoreIntoRegistry()
         if let data = O5RegistrationData.allValues.randomElement() {
             return data.controllerId
         }
@@ -46,12 +47,14 @@ class O5CertificateStore {
     // Returns true if no O5RegistrationData is available
     static var isEmpty: Bool {
         loadOptionalO5Data()
+        O5CertificateKeychain.restoreIntoRegistry()
         return O5RegistrationData.isEmpty
     }
 
     // Returns true if O5RegistrationData exists for the specific controllerId
     static func contains(_ controllerId: UInt32) -> Bool {
         loadOptionalO5Data()
+        O5CertificateKeychain.restoreIntoRegistry()
         return O5RegistrationData.get(controllerId) != nil
     }
 
@@ -62,6 +65,7 @@ class O5CertificateStore {
     init(controllerId: UInt32) throws {
 
         loadOptionalO5Data()
+        O5CertificateKeychain.restoreIntoRegistry()
         guard let data = O5RegistrationData.get(controllerId) else {
             log.debug("@@@ O5CertificateStore has no data for 0x%08X", controllerId)
             throw PodCommsError.noCertificateFound
@@ -121,12 +125,6 @@ class O5CertificateStore {
     ])
 
     /// Extract the raw P-256 public key (64 bytes, x || y) from a DER-encoded X.509 certificate.
-    ///
-    /// Searches for the known SubjectPublicKeyInfo DER header pattern for P-256 keys,
-    /// then extracts the 64-byte raw EC point (without the 0x04 prefix).
-    ///
-    /// - Parameter certDERBase64: Base64-encoded DER certificate
-    /// - Returns: 64-byte raw public key (x || y), or nil if not found / not P-256
     static func extractP256PublicKey(fromDERCertBase64 certDERBase64: String) -> Data? {
         guard let certDER = Data(base64Encoded: certDERBase64) else {
             return nil
@@ -158,9 +156,6 @@ class O5CertificateStore {
     // MARK: - DER Certificate Field Extraction
 
     /// Extract the serial number from a DER-encoded X.509 certificate.
-    ///
-    /// Handles both v3 certificates (with explicit version tag `a0 03 02 01 02`)
-    /// and v1 certificates (no version tag — serial immediately after TBSCertificate SEQUENCE).
     static func extractSerialNumber(fromDERCert certDER: Data) -> Data? {
         // Try v3 first: [0] EXPLICIT { INTEGER 2 } = a0 03 02 01 02
         // Followed by serial: 02 [length] [serial bytes]
@@ -174,16 +169,13 @@ class O5CertificateStore {
             return certDER.subdata(in: serialStart..<(serialStart + serialLen))
         }
 
-        // V1 fallback: no version tag. Structure is:
-        //   SEQUENCE (outer cert) { SEQUENCE (TBSCertificate) { INTEGER (serial) ... } ... }
-        // Parse outer SEQUENCE, then inner TBSCertificate SEQUENCE, then read serial INTEGER directly.
+        // V1 fallback
         guard certDER.count > 4, certDER[0] == 0x30 else { return nil }
         let (_, outerContentStart) = parseDERLength(certDER, offset: 1)
         guard let tbsStart = outerContentStart, tbsStart < certDER.count, certDER[tbsStart] == 0x30 else { return nil }
         let (_, tbsContentStart) = parseDERLength(certDER, offset: tbsStart + 1)
         guard let serialOffset = tbsContentStart, serialOffset < certDER.count else { return nil }
 
-        // First element should be INTEGER (0x02) = serial number (v1 has no version tag)
         guard certDER[serialOffset] == 0x02 else { return nil }
         let lenOffset = serialOffset + 1
         guard lenOffset < certDER.count else { return nil }
@@ -194,15 +186,12 @@ class O5CertificateStore {
     }
 
     /// Parse a DER length field starting at `offset`. Returns (length, contentStartOffset).
-    /// Handles both short-form (single byte) and long-form (0x8n + n bytes) lengths.
     private static func parseDERLength(_ data: Data, offset: Int) -> (Int?, Int?) {
         guard offset < data.count else { return (nil, nil) }
         let firstByte = data[offset]
         if firstByte & 0x80 == 0 {
-            // Short form
             return (Int(firstByte), offset + 1)
         } else {
-            // Long form
             let numLenBytes = Int(firstByte & 0x7f)
             guard numLenBytes > 0, offset + 1 + numLenBytes <= data.count else { return (nil, nil) }
             var len = 0
@@ -214,17 +203,26 @@ class O5CertificateStore {
     }
 }
 
+// MARK: - Public availability helper
+
+public func isOmnipod5Enabled() -> Bool {
+    return true
+}
+
 // MARK: - Runtime Installer
 
-/// Load the data from the optional O5Data file if present by invoking its install() function using a unsafeBitCast
 fileprivate func loadOptionalO5Data() {
-    // Use RTLD_DEFAULT (-2) to find the symbol if it was compiled into the binary
-    if let installSym = dlsym(
+    guard let installSym = dlsym(
         UnsafeMutableRawPointer(bitPattern: -2),
         "O5RegistrationDataInstall"
-    ) {
-        typealias InstallFunc = @convention(c) () -> Void
-        let install = unsafeBitCast(installSym, to: InstallFunc.self)
-        install()
+    ) else { return }
+
+    let before = Set(O5RegistrationData.allValues.map { $0.controllerId })
+    typealias InstallFunc = @convention(c) () -> Void
+    let install = unsafeBitCast(installSym, to: InstallFunc.self)
+    install()
+    let after = Set(O5RegistrationData.allValues.map { $0.controllerId })
+    for newId in after.subtracting(before) {
+        O5RegistrationData.markSource(newId, .compiled)
     }
 }
