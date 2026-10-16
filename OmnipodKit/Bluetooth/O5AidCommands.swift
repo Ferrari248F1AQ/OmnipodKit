@@ -120,8 +120,9 @@ struct O5AidCommands {
         static let attribute = "2"
         static let defaultBinaryData = Data([0x00, 0x03, 0x00, 0x0E, 0x00])
 
-        static func payload() -> (data: Data, responsePrefix: String) {
-            let payload = O5AidCommands.setGetPayload(feature: feature, attribute: attribute, binaryData: defaultBinaryData)
+        static func payload(binaryData: Data? = nil) -> (data: Data, responsePrefix: String) {
+            let data = binaryData ?? defaultBinaryData
+            let payload = O5AidCommands.setGetPayload(feature: feature, attribute: attribute, binaryData: data)
             let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
             return (payload, prefix)
         }
@@ -254,4 +255,567 @@ struct O5AidCommands {
             return (payload, prefix)
         }
     }
+
+    // MARK: - Algorithm Configuration Commands
+
+    /// Correction Factor Profile — per-slot correction factors (ISF).
+    /// Binary wire format: `S3.3=` + [correction factor data] + `,G3.3`
+    struct CorrectionFactorProfileCommand {
+        static let feature = "3"
+        static let attribute = "3"
+
+        static func setGet(binaryData: Data) -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.setGetPayload(feature: feature, attribute: attribute, binaryData: binaryData)
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+
+        static func get() -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.getPayload(feature: feature, attribute: attribute)
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+    }
+
+    /// Hypo Protection settings — configures the pod's hypo protection threshold and behavior.
+    /// Wire format: `S3.4=` + [hypo config data] + `,G3.4`
+    struct HypoProtectionCommand {
+        static let feature = "3"
+        static let attribute = "4"
+
+        static func setGet(binaryData: Data) -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.setGetPayload(feature: feature, attribute: attribute, binaryData: binaryData)
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+
+        static func get() -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.getPayload(feature: feature, attribute: attribute)
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+    }
+
+    /// EGV Threshold — configures glucose thresholds for alerts (e.g., below 55).
+    /// Wire format: `S3.5=` + [threshold data] + `,G3.5`
+    struct EgvThresholdCommand {
+        static let feature = "3"
+        static let attribute = "5"
+
+        static func setGet(binaryData: Data) -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.setGetPayload(feature: feature, attribute: attribute, binaryData: binaryData)
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+
+        static func get() -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.getPayload(feature: feature, attribute: attribute)
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+    }
+
+    /// Algorithm Clinical Parameters — advanced algorithm tuning.
+    /// Wire format: `S3.6=` + [clinical params data] + `,G3.6`
+    struct AlgorithmClinicalParamsCommand {
+        static let feature = "3"
+        static let attribute = "6"
+
+        static func setGet(binaryData: Data) -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.setGetPayload(feature: feature, attribute: attribute, binaryData: binaryData)
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+
+        static func get() -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.getPayload(feature: feature, attribute: attribute)
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+    }
+
+    /// Algorithm IOB — get/set algorithm's insulin-on-board state.
+    /// Wire format: `S3.8=` + [IOB data] + `,G3.8`
+    struct AlgorithmIobCommand {
+        static let feature = "3"
+        static let attribute = "8"
+
+        static func setGet(binaryData: Data) -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.setGetPayload(feature: feature, attribute: attribute, binaryData: binaryData)
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+
+        static func get() -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.getPayload(feature: feature, attribute: attribute)
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+    }
+
+    /// Algorithm Interface Manager — controls algorithm interface mode.
+    /// Wire format: `S3.10=` + [interface data] + `,G3.10`
+    struct AlgorithmInterfaceManagerCommand {
+        static let feature = "3"
+        static let attribute = "10"
+
+        static func setGet(binaryData: Data) -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.setGetPayload(feature: feature, attribute: attribute, binaryData: binaryData)
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+
+        static func get() -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.getPayload(feature: feature, attribute: attribute)
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+    }
+
+    // MARK: - Loop State Commands
+
+    /// AID Loop State — get/set closed-loop state (open, closed, limited).
+    /// GET: `G3.13`  SET: `S3.13=[state],G3.13`
+    struct AidLoopStateCommand {
+        static let feature = "3"
+        static let attribute = "13"
+
+        static func get() -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.getPayload(feature: feature, attribute: attribute)
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+
+        static func set(state: O5LoopStateValue) -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.setGetPayload(feature: feature, attribute: attribute, data: "\(state.rawValue)")
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+    }
+
+    /// Insulin History Length — number of records in the algorithm's insulin history buffer.
+    /// GET: `G2.2`  SET: `S2.2=[length],G2.2`
+    struct InsulinHistoryLengthCommand {
+        static let feature = "2"
+        static let attribute = "2"
+
+        static func get() -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.getPayload(feature: feature, attribute: attribute)
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+
+        static func set(length: Int) -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.setGetPayload(feature: feature, attribute: attribute, data: "\(length)")
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+    }
+
+    // MARK: - CGM Pairing Commands
+
+    /// CGM Pairing Information — registers CGM sensor with the pod.
+    /// Wire format: `SE4.1=` + [pairing info binary data]
+    struct CgmPairingInformationCommand {
+        static let feature = "4"
+        static let attribute = "1"
+
+        static func set(binaryData: Data) -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.extendedSetPayload(feature: feature, attribute: attribute, binaryData: binaryData)
+            let prefix = O5AidCommands.extendedSetResponsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+
+        static func get() -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.getPayload(feature: feature, attribute: attribute)
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+    }
+
+    /// CGM Interface Manager — controls CGM subsystem on the pod.
+    /// Wire format: `S4.2=` + [interface data] + `,G4.2`
+    struct CgmInterfaceManagerCommand {
+        static let feature = "4"
+        static let attribute = "2"
+
+        static func setGet(binaryData: Data) -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.setGetPayload(feature: feature, attribute: attribute, binaryData: binaryData)
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+
+        static func get() -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.getPayload(feature: feature, attribute: attribute)
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+    }
+
+    /// Transmitter Info — sends CGM transmitter identification to the pod.
+    /// Wire format: `SE4.3=` + [transmitter info binary data]
+    struct TransmitterInfoCommand {
+        static let feature = "4"
+        static let attribute = "3"
+
+        static func set(binaryData: Data) -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.extendedSetPayload(feature: feature, attribute: attribute, binaryData: binaryData)
+            let prefix = O5AidCommands.extendedSetResponsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+
+        static func get() -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.getPayload(feature: feature, attribute: attribute)
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+    }
+
+    /// G6 Sensor Information — Dexcom G6-specific sensor data sent to the pod.
+    /// Wire format: `SE4.4=` + [G6 sensor data]
+    struct G6SensorInformationCommand {
+        static let feature = "4"
+        static let attribute = "4"
+
+        static func set(binaryData: Data) -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.extendedSetPayload(feature: feature, attribute: attribute, binaryData: binaryData)
+            let prefix = O5AidCommands.extendedSetResponsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+
+        static func get() -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.getPayload(feature: feature, attribute: attribute)
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+    }
+
+    /// G7 Sensor Information — Dexcom G7-specific sensor data sent to the pod.
+    /// Includes: pairing code, serial number, BLE address, operating interval,
+    /// advertisement reference time, transmitter lifetime, driver version, BLE address type.
+    /// Wire format: `SE4.5=` + [G7 sensor data]
+    struct G7SensorInformationCommand {
+        static let feature = "4"
+        static let attribute = "5"
+
+        static func set(binaryData: Data) -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.extendedSetPayload(feature: feature, attribute: attribute, binaryData: binaryData)
+            let prefix = O5AidCommands.extendedSetResponsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+
+        static func get() -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.getPayload(feature: feature, attribute: attribute)
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+    }
+
+    /// Libre 2 Sensor Information — Abbott Libre 2 sensor data.
+    /// Wire format: `SE4.6=` + [Libre 2 sensor data]
+    struct Libre2SensorInformationCommand {
+        static let feature = "4"
+        static let attribute = "6"
+
+        static func set(binaryData: Data) -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.extendedSetPayload(feature: feature, attribute: attribute, binaryData: binaryData)
+            let prefix = O5AidCommands.extendedSetResponsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+
+        static func get() -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.getPayload(feature: feature, attribute: attribute)
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+    }
+
+    /// Libre 3 Sensor Information — Abbott Libre 3 sensor data.
+    /// Wire format: `SE4.7=` + [Libre 3 sensor data]
+    struct Libre3SensorInformationCommand {
+        static let feature = "4"
+        static let attribute = "7"
+
+        static func set(binaryData: Data) -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.extendedSetPayload(feature: feature, attribute: attribute, binaryData: binaryData)
+            let prefix = O5AidCommands.extendedSetResponsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+
+        static func get() -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.getPayload(feature: feature, attribute: attribute)
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+    }
+
+    // MARK: - Patient History Commands
+
+    /// Patient History Log — read pod's internal therapy log (PHB).
+    /// GET: `G5.1`
+    struct PatientHistoryLogCommand {
+        static let feature = "5"
+        static let attribute = "1"
+
+        static func get() -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.getPayload(feature: feature, attribute: attribute)
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+    }
+
+    /// Patient History Log Enabled — enable/disable PHB logging on the pod.
+    /// SET: `S5.2=[0|1],G5.2`
+    struct PatientHistoryLogEnabledCommand {
+        static let feature = "5"
+        static let attribute = "2"
+
+        static func setGet(enabled: Bool) -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.setGetPayload(feature: feature, attribute: attribute, data: enabled ? "1" : "0")
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+
+        static func get() -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.getPayload(feature: feature, attribute: attribute)
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+    }
+
+    /// Patient History Buffer Index — read/reset PHB write position.
+    /// GET: `G5.3`  SET: `SE5.3=[0]` (reset)
+    struct PatientHistoryBufferIndexCommand {
+        static let feature = "5"
+        static let attribute = "3"
+
+        static func get() -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.getPayload(feature: feature, attribute: attribute)
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+
+        static func reset() -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.extendedSetPayload(feature: feature, attribute: attribute, data: "0")
+            let prefix = O5AidCommands.extendedSetResponsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+    }
+
+    // MARK: - Pod Status Commands
+
+    /// General Status query — read pod general status (reservoir, delivery state, etc.).
+    /// GET: `G6.1`
+    struct GeneralStatusCommand {
+        static let feature = "6"
+        static let attribute = "1"
+
+        static func get() -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.getPayload(feature: feature, attribute: attribute)
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+    }
+
+    /// Pod Core Info — read pod hardware/firmware identification.
+    /// GET: `G6.2`
+    struct PodCoreInfoCommand {
+        static let feature = "6"
+        static let attribute = "2"
+
+        static func get() -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.getPayload(feature: feature, attribute: attribute)
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+    }
+
+    // MARK: - Activity Mode
+
+    /// QN Activity Mode — toggle activity mode (elevated target BG) on the pod.
+    /// Wire format: `S3.14=` + [duration, intensity] + `,G3.14`
+    struct ActivityModeCommand {
+        static let feature = "3"
+        static let attribute = "14"
+
+        static func setGet(duration: Int, intensity: Int) -> (data: Data, responsePrefix: String) {
+            var binaryData = Data()
+            binaryData.appendBigEndian(UInt16(duration))
+            binaryData.appendBigEndian(UInt16(intensity))
+            let payload = O5AidCommands.setGetPayload(feature: feature, attribute: attribute, binaryData: binaryData)
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+
+        static func get() -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.getPayload(feature: feature, attribute: attribute)
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+    }
+
+    // MARK: - Basal Limited Mode
+
+    /// Automated Limited Mode — the pod enters this when CGM data is unavailable.
+    /// Delivers a safe basal rate based on TDI until CGM data resumes.
+    /// Wire format: `S3.15=` + [0=off, 1=on] + `,G3.15`
+    struct BasalLimitedModeCommand {
+        static let feature = "3"
+        static let attribute = "15"
+
+        static func setGet(enabled: Bool) -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.setGetPayload(feature: feature, attribute: attribute, data: enabled ? "1" : "0")
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+
+        static func get() -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.getPayload(feature: feature, attribute: attribute)
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+    }
+
+    // MARK: - Engineering / ELV Logs
+
+    /// ELV (Engineering Log Volume) Buffer — diagnostic logs from the pod.
+    /// GET: `G7.1`
+    struct ElvBufferCommand {
+        static let feature = "7"
+        static let attribute = "1"
+
+        static func get() -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.getPayload(feature: feature, attribute: attribute)
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+    }
+
+    /// ELV Buffer Index — read/set ELV log buffer write position.
+    /// GET: `G7.2`  SET: `S7.2=[index],G7.2`
+    struct ElvBufferIndexCommand {
+        static let feature = "7"
+        static let attribute = "2"
+
+        static func get() -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.getPayload(feature: feature, attribute: attribute)
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+
+        static func set(index: Int) -> (data: Data, responsePrefix: String) {
+            let payload = O5AidCommands.setGetPayload(feature: feature, attribute: attribute, data: "\(index)")
+            let prefix = O5AidCommands.responsePrefix(feature: feature, attribute: attribute)
+            return (payload, prefix)
+        }
+    }
+}
+
+// MARK: - Loop State Values
+
+/// Wire values for the AID loop state command.
+enum O5LoopStateValue: Int {
+    case inactive = 0
+    case closedLoop = 1
+    case limitedMode = 2
+    case safeBasal = 3
+}
+
+// MARK: - CGM Type
+
+/// Supported CGM sensor types for the O5 pod.
+enum O5CgmType: String, Codable, CaseIterable {
+    case dexcomG6 = "g6"
+    case dexcomG7 = "g7"
+    case libre2 = "libre2"
+    case libre3 = "libre3"
+    case none = "none"
+
+    var displayName: String {
+        switch self {
+        case .dexcomG6: return "Dexcom G6"
+        case .dexcomG7: return "Dexcom G7"
+        case .libre2: return "Libre 2"
+        case .libre3: return "Libre 3"
+        case .none: return "None"
+        }
+    }
+}
+
+// MARK: - CGM State (pod-side state machine)
+
+/// The pod's internal CGM subsystem state.
+enum O5CgmState: String, Codable {
+    case none = "none"
+    case pairing = "pairing"
+    case warmingUp = "warmingUp"
+    case active = "active"
+    case noTxId = "noTxId"
+    case signalLoss = "signalLoss"
+    case scanStopped = "scanStopped"
+    case txIdAuthError = "txIdAuthError"
+    case activeLinkLoss = "activeLinkLoss"
+    case txBleAuthError = "txBleAuthError"
+    case unrecoverableError = "unrecoverableError"
+    case sensorNotActive = "sensorNotActive"
+    case sensorOutOfCalibration = "outOfCalibration"
+    case temporarySensorFailure = "temporaryFailure"
+    case predictionUnavailable = "predictionUnavailable"
+    case invalidState = "invalid"
+
+    var isReceivingData: Bool {
+        return self == .active
+    }
+
+    var needsIntervention: Bool {
+        switch self {
+        case .txIdAuthError, .txBleAuthError, .unrecoverableError, .sensorNotActive:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+// MARK: - Special EGV Values
+
+/// Special EGV values sent to the pod to indicate CGM state changes.
+enum O5SpecialEgv {
+    static let cgmPairing = -1
+    static let cgmConnecting = -2
+    static let cgmLinkLoss = -3
+    static let cgmNoTxId = -4
+    static let cgmSignalLoss = -5
+    static let cgmScanStopped = -6
+    static let cgmTxIdAuthError = -7
+    static let cgmTxBleAuthError = -8
+    static let cgmUnrecoverableError = -9
+    static let incorrectBleAddress = -10
+    static let searchingBleAddress = -11
+    static let powerAberration = -12
+    static let sensorOutOfCalibration = -13
+    static let noEgvValue = -99
+
+    static func isSpecial(_ value: Int) -> Bool {
+        return value < 0
+    }
+}
+
+// MARK: - Alert Masks
+
+/// Alert bitmask values for the pod's alert system.
+struct O5AlertMask: OptionSet {
+    let rawValue: UInt16
+
+    static let autoOff             = O5AlertMask(rawValue: 1 << 0)
+    static let egvBelow55          = O5AlertMask(rawValue: 1 << 1)
+    static let existCloseLoop      = O5AlertMask(rawValue: 1 << 2)
+    static let lowReservoir        = O5AlertMask(rawValue: 1 << 3)
+    static let lumpOfCoal          = O5AlertMask(rawValue: 1 << 4)  // pod expiry warning
+    static let missing12Egv        = O5AlertMask(rawValue: 1 << 5)
+    static let podExpiration       = O5AlertMask(rawValue: 1 << 6)
+    static let podExpireAtUserTime = O5AlertMask(rawValue: 1 << 7)
+    static let podExpireImminent   = O5AlertMask(rawValue: 1 << 8)
+    static let suspendEnded        = O5AlertMask(rawValue: 1 << 9)
+    static let suspendInProgress   = O5AlertMask(rawValue: 1 << 10)
 }

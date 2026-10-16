@@ -483,6 +483,18 @@ struct OmniSettingsView: View  {
                 }
             }
 
+            // O5 Algorithm Mode Toggle
+            if viewModel.isO5Pod {
+                O5AlgorithmModeView(
+                    selectedMode: $viewModel.o5AlgorithmMode,
+                    aidStatus: viewModel.o5AidStatus,
+                    isO5Pod: viewModel.isO5Pod,
+                    onModeChange: { mode in
+                        viewModel.setO5AlgorithmMode(mode)
+                    }
+                )
+            }
+
             Section(header: SectionHeader(label: LocalizedString("Configuration", comment: "Section header for configuration section")))
             {
                 let reservoirLevel = viewModel.reservoirLevel?.rawValue ?? Pod.reservoirCapacity + Pod.pulseSize
@@ -547,6 +559,33 @@ struct OmniSettingsView: View  {
                             Spacer()
                             Text(currentTitle)
                                 .foregroundColor(.secondary)
+                        }
+                    }
+                }
+
+                // O5 Therapy Insights (15-day regression report)
+                if viewModel.isO5Pod {
+                    NavigationLink(destination:
+                        Group {
+                            if let report = viewModel.regressionReport {
+                                O5RegressionReportView(
+                                    report: report,
+                                    onApplyBasal: { viewModel.applyBasalSuggestion($0) },
+                                    onApplyISF: { viewModel.applyISFSuggestion($0) },
+                                    onApplyICR: { viewModel.applyICRSuggestion($0) },
+                                    onApplyAll: { viewModel.applyAllSuggestions(report: report) }
+                                )
+                            } else {
+                                ProgressView()
+                                    .onAppear { viewModel.refreshRegressionReport() }
+                            }
+                        }
+                    ) {
+                        HStack {
+                            Image(systemName: "chart.line.uptrend.xyaxis")
+                                .foregroundColor(.purple)
+                            Text(LocalizedString("Therapy Insights", comment: "Regression report navigation link"))
+                                .foregroundColor(Color.primary)
                         }
                     }
                 }

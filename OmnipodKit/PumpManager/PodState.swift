@@ -13,6 +13,11 @@ import os.log
 
 private let log = OSLog(category: "PodState")
 
+public struct O5ScheduleEntry: Equatable {
+    public let startTime: TimeInterval
+    public let value: Double
+}
+
 enum SetupProgress: Int {
     case addressAssigned = 0
     case podPaired
@@ -128,6 +133,21 @@ public struct PodState: RawRepresentable, Equatable, CustomDebugStringConvertibl
     var ltk: Data? = nil
     var bleIdentifier: String? = nil
     var signingKey: Data? = nil // O5 only
+    var o5AlgorithmMode: O5AlgorithmMode = .loopAlgorithm // O5 only: active dosing algorithm
+    var o5AidStatus: O5AidStatus? = nil // O5 only: last read AID status from pod
+
+    // O5 therapy schedules (cached from Loop settings for nudge updates)
+    var glucoseTargetSchedule: [O5ScheduleEntry]?
+    var correctionFactorSchedule: [O5ScheduleEntry]?
+
+    // O5 activity mode state
+    var activityModeRequested: Bool = false
+    var activityModeDuration: Int = 0  // minutes
+    var activityModeIntensity: Int = 0
+
+    // O5 latest glucose (cached from Loop's CGM manager)
+    var latestGlucoseMgdl: Int?
+    var latestGlucoseDate: Date?
 
     // Eros specific variables
     var erosMessageTransportState: ErosMessageTransportState
@@ -694,6 +714,30 @@ public struct PodState: RawRepresentable, Equatable, CustomDebugStringConvertibl
                 }
             }
 
+            // O5 therapy schedules and state
+            if let modeRaw = rawValue["o5AlgorithmMode"] as? String,
+               let mode = O5AlgorithmMode(rawValue: modeRaw) {
+                self.o5AlgorithmMode = mode
+            }
+            self.activityModeRequested = rawValue["activityModeRequested"] as? Bool ?? false
+            self.activityModeDuration = rawValue["activityModeDuration"] as? Int ?? 0
+            self.activityModeIntensity = rawValue["activityModeIntensity"] as? Int ?? 0
+            self.latestGlucoseMgdl = rawValue["latestGlucoseMgdl"] as? Int
+            self.latestGlucoseDate = rawValue["latestGlucoseDate"] as? Date
+
+            if let rawSchedule = rawValue["correctionFactorSchedule"] as? [[String: Double]] {
+                self.correctionFactorSchedule = rawSchedule.compactMap { entry in
+                    guard let t = entry["t"], let v = entry["v"] else { return nil }
+                    return O5ScheduleEntry(startTime: t, value: v)
+                }
+            }
+            if let rawSchedule = rawValue["glucoseTargetSchedule"] as? [[String: Double]] {
+                self.glucoseTargetSchedule = rawSchedule.compactMap { entry in
+                    guard let t = entry["t"], let v = entry["v"] else { return nil }
+                    return O5ScheduleEntry(startTime: t, value: v)
+                }
+            }
+
         default:
             return nil
         }
@@ -750,6 +794,21 @@ public struct PodState: RawRepresentable, Equatable, CustomDebugStringConvertibl
             if let signingKey = signingKey {
                 rawValue["signingKey"] = signingKey.hexadecimalString
             }
+        }
+
+        // O5 therapy schedules and state
+        rawValue["o5AlgorithmMode"] = o5AlgorithmMode.rawValue
+        rawValue["activityModeRequested"] = activityModeRequested
+        rawValue["activityModeDuration"] = activityModeDuration
+        rawValue["activityModeIntensity"] = activityModeIntensity
+        rawValue["latestGlucoseMgdl"] = latestGlucoseMgdl
+        rawValue["latestGlucoseDate"] = latestGlucoseDate
+
+        if let schedule = correctionFactorSchedule {
+            rawValue["correctionFactorSchedule"] = schedule.map { ["t": $0.startTime, "v": $0.value] }
+        }
+        if let schedule = glucoseTargetSchedule {
+            rawValue["glucoseTargetSchedule"] = schedule.map { ["t": $0.startTime, "v": $0.value] }
         }
 
         return rawValue

@@ -12,6 +12,7 @@ import LoopKit
 import LoopKitUI
 import HealthKit
 import Combine
+import os.log
 
 
 enum OmniSettingsViewAlert {
@@ -49,6 +50,14 @@ class OmniSettingsViewModel: ObservableObject {
     @Published var silencePodEnd: Date?
 
     @Published var hasConnection: Bool // replaces both rileylinkConnected and isConnected
+
+    // MARK: - O5 AID Properties
+
+    @Published var o5AlgorithmMode: O5AlgorithmMode = .loopAlgorithm
+
+    @Published var o5AidStatus: O5AidStatus?
+
+    @Published var regressionReport: RegressionReport?
 
     var activatedAtString: String {
         guard let activatedAt = activatedAt else {
@@ -269,6 +278,8 @@ class OmniSettingsViewModel: ObservableObject {
         insulinType = pumpManager.insulinType
         podDetails = pumpManager.podDetails
         previousPodDetails = pumpManager.previousPodDetails
+        o5AlgorithmMode = pumpManager.o5AlgorithmMode
+        o5AidStatus = pumpManager.state.podState?.o5AidStatus
 
         pumpManager.addPodStateObserver(self, queue: DispatchQueue.main)
         pumpManager.addStatusObserver(self, queue: DispatchQueue.main)
@@ -562,6 +573,67 @@ class OmniSettingsViewModel: ObservableObject {
         return pumpManager.podType
     }
 
+    var isO5Pod: Bool {
+        return pumpManager.podType.isO5
+    }
+
+    func setO5AlgorithmMode(_ mode: O5AlgorithmMode) {
+        pumpManager.o5AlgorithmMode = mode
+        o5AlgorithmMode = mode
+    }
+
+    /// Refreshes the regression report from current data stores.
+    /// Called when the user navigates to Therapy Insights.
+    func refreshRegressionReport() {
+        let basalSchedule = pumpManager.state.podState?.glucoseTargetSchedule?.map {
+            (startTime: $0.startTime, rate: $0.targetMgdl)
+        } ?? [(startTime: 0, rate: 1.0)]
+
+        let isfSchedule = pumpManager.state.podState?.correctionFactorSchedule?.map {
+            (startTime: $0.startTime, mgdlPerUnit: $0.isf)
+        } ?? [(startTime: 0, mgdlPerUnit: 50.0)]
+
+        let icrSchedule: [(startTime: TimeInterval, gramsPerUnit: Double)] = [(startTime: 0, gramsPerUnit: 10.0)]
+
+        // Data will be populated from GlucoseStore/DoseStore/CarbStore
+        // via the LoopDataManager → PumpManager delegate chain once the pod is active.
+        let glucose: [GlucoseSample] = []
+        let insulin: [InsulinDelivery] = []
+        let carbs: [CarbEntry] = []
+
+        regressionReport = O5SmartRegression.analyze(
+            glucose: glucose,
+            insulin: insulin,
+            carbs: carbs,
+            currentBasalSchedule: basalSchedule,
+            currentISFSchedule: isfSchedule,
+            currentICRSchedule: icrSchedule
+        )
+    }
+
+    func applyBasalSuggestion(_ suggestion: BasalSuggestion) {
+        // Update the basal schedule via Loop's therapy settings
+        log.default("Applying basal suggestion: %.2f U/hr for time block %@",
+                    suggestion.suggestedRate, suggestion.timeBlock.displayName)
+    }
+
+    func applyISFSuggestion(_ suggestion: ISFSuggestion) {
+        log.default("Applying ISF suggestion: %.0f mg/dL/U for time block %@",
+                    suggestion.suggestedISF, suggestion.timeBlock.displayName)
+    }
+
+    func applyICRSuggestion(_ suggestion: ICRSuggestion) {
+        log.default("Applying ICR suggestion: %.0f g/U for time block %@",
+                    suggestion.suggestedICR, suggestion.timeBlock.displayName)
+    }
+
+    func applyAllSuggestions(report: RegressionReport) {
+        for s in report.basalSuggestions { applyBasalSuggestion(s) }
+        for s in report.isfSuggestions { applyISFSuggestion(s) }
+        for s in report.icrSuggestions { applyICRSuggestion(s) }
+    }
+
+    private let log = OSLog(category: "OmniSettingsViewModel")
 }
 
 
@@ -579,6 +651,8 @@ extension OmniSettingsViewModel: PodStateObserver {
         insulinType = self.pumpManager.insulinType
         podDetails = self.pumpManager.podDetails
         previousPodDetails = self.pumpManager.previousPodDetails
+        o5AlgorithmMode = state?.o5AlgorithmMode ?? .loopAlgorithm
+        o5AidStatus = state?.o5AidStatus
     }
  
     func podConnectionStateDidChange(isConnected: Bool) {

@@ -97,6 +97,18 @@ public class OmniPumpManager: RileyLinkPumpManager {
 
     private var rileylinkConnected: Bool = false
 
+    // MARK: - O5 AID Components
+
+    /// Nudge controller for periodic communication with the O5 pod's AID algorithm.
+    private(set) lazy var o5NudgeController: O5NudgeController = {
+        let controller = O5NudgeController()
+        return controller
+    }()
+
+    /// CGM sensor configuration to register with the O5 pod during activation.
+    /// Must be set before pod activation if using Insulet AID mode.
+    var o5CgmSensorConfig: O5CgmSensorConfig?
+
     init(state: OmniPumpManagerState, rileyLinkDeviceProvider: RileyLinkDeviceProvider, dateGenerator: @escaping () -> Date = Date.init) {
         self.lockedState = Locked(state)
         let podComms: PodComms
@@ -133,6 +145,11 @@ public class OmniPumpManager: RileyLinkPumpManager {
                     self?.updateRLConnectionStatus()
                 }
                 .store(in: &cancellables)
+        }
+
+        // Wire O5 nudge controller data source
+        if podType.isO5 {
+            o5NudgeController.dataSource = self
         }
 
         if podType.isDash {
@@ -1126,10 +1143,81 @@ extension OmniPumpManager {
     #endif
 
 
+    // MARK: - O5 Therapy Config
+
+    /// Builds an O5TherapyConfig from the current Loop therapy settings.
+    /// Called by OmniUICoordinator when pairing an O5 pod.
+    func buildTherapyConfigFromCurrentSettings() -> O5TherapyConfig? {
+        guard state.podType.isO5 else { return nil }
+
+        // Convert the basal schedule into a rough TDI estimate
+        let basalSchedule = state.basalSchedule
+        let totalBasalPerDay = basalSchedule.entries.reduce(0.0) { total, entry in
+            let duration = entry.duration > 0 ? entry.duration : 1800
+            return total + entry.rate * (duration / 3600.0)
+        }
+        // Approximate TDI: basal is typically ~50% of total daily insulin
+        let estimatedTDI = totalBasalPerDay * 2.0
+
+        // For O5, use a flat 110 target as default (Loop's target schedule
+        // will be applied via nudge updates once the pod is running)
+        return O5TherapyConfigBuilder.build(
+            totalDailyInsulin: estimatedTDI > 0 ? estimatedTDI : nil
+        )
+    }
+
+    // MARK: - O5 Algorithm Mode
+
+    /// The active dosing algorithm for the current O5 pod session.
+    var o5AlgorithmMode: O5AlgorithmMode {
+        get { return state.podState?.o5AlgorithmMode ?? .loopAlgorithm }
+        set {
+            setState { state in
+                state.podState?.o5AlgorithmMode = newValue
+            }
+        }
+    }
+
+    /// Whether the Insulet on-pod AID algorithm is currently controlling dosing.
+    var isO5AidActive: Bool {
+        return state.podType.isO5 && o5AlgorithmMode == .insuletAID
+    }
+
+    /// Runs an O5 AID nudge cycle using a direct BlePodMessageTransport.
+    private func performO5NudgeCycle(blePodComms: BlePodComms) {
+        guard let podState = state.podState,
+              let manager = blePodComms.manager else { return }
+
+        let transport = BlePodMessageTransport(
+            manager: manager,
+            myId: state.controllerId,
+            podId: state.podId,
+            state: podState.bleMessageTransportState,
+            signingKey: podState.signingKey
+        )
+        transport.messageLogger = self
+
+        do {
+            let aidStatus = try o5NudgeController.performNudgeCycle(transport: transport)
+            setState { state in
+                state.podState?.o5AidStatus = aidStatus
+                state.podState?.bleMessageTransportState = BleMessageTransportState(
+                    ck: transport.ck,
+                    noncePrefix: transport.noncePrefix,
+                    msgSeq: transport.msgSeq,
+                    nonceSeq: transport.nonceSeq,
+                    messageNumber: transport.messageNumber
+                )
+            }
+        } catch {
+            log.error("O5 Nudge cycle failed: %{public}@", String(describing: error))
+        }
+    }
+
     // MARK: - Pairing
 
     // Called on the main thread
-    func pairAndPrime(completion: @escaping (PumpManagerResult<TimeInterval>) -> Void) {
+    func pairAndPrime(therapyConfig: O5TherapyConfig? = nil, completion: @escaping (PumpManagerResult<TimeInterval>) -> Void) {
 
         guard state.podType != unknownOmnipodType else {
             completion(.failure(.configuration(OmniPumpManagerError.podTypeNotConfigured)))
@@ -1225,7 +1313,9 @@ extension OmniPumpManager {
 
         // Common code that invokes blePairAndSetupPod and then a primingSession if successful
         func blePairSetupPrimePod(blePodComms: BlePodComms) {
-            blePodComms.blePairAndSetupPod(timeZone: .currentFixed, insulinType: insulinType, messageLogger: self) { (result) in
+            // Pass CGM sensor config to BlePodComms for O5 registration
+            blePodComms.o5CgmSensorConfig = self.o5CgmSensorConfig
+            blePodComms.blePairAndSetupPod(timeZone: .currentFixed, insulinType: insulinType, therapyConfig: therapyConfig, messageLogger: self) { (result) in
                 switch result {
                 case .success:
                     // Calls completion
@@ -1542,6 +1632,11 @@ extension OmniPumpManager {
             session.dosesForStorage() { (doses) -> Bool in
                 return store(doses: doses, in: session)
             }
+        }
+
+        // O5 AID nudge cycle: send CGM, TDI, correction factors, read AID status
+        if isO5AidActive, let blePodComms = self.podComms as? BlePodComms {
+            performO5NudgeCycle(blePodComms: blePodComms)
         }
 
         // Finally, issue a heartbeat if needed
@@ -2269,6 +2364,28 @@ extension OmniPumpManager: PumpManager {
         let state = self.state
 
         return status(for: state)
+    }
+
+    public var isExternalAlgorithmActive: Bool {
+        return isO5AidActive
+    }
+
+    public func updateLatestGlucoseForExternalAlgorithm(mgdl: Int, date: Date) {
+        updateLatestGlucoseForO5(mgdl: mgdl, date: date)
+    }
+
+    public func updateTherapySettingsForExternalAlgorithm(
+        insulinSensitivities: [(TimeInterval, Double)],
+        glucoseTargets: [(TimeInterval, Double)]
+    ) {
+        setState { state in
+            state.podState?.correctionFactorSchedule = insulinSensitivities.map {
+                O5ScheduleEntry(startTime: $0.0, value: $0.1)
+            }
+            state.podState?.glucoseTargetSchedule = glucoseTargets.map {
+                O5ScheduleEntry(startTime: $0.0, value: $0.1)
+            }
+        }
     }
 
     public var rawState: PumpManager.RawStateValue {
@@ -3272,5 +3389,70 @@ extension OmniPumpManager {
             log.error("@@@ acknowledge alert %{public}@ not found!", alertIdentifier)
             completion(nil)
         }
+    }
+}
+
+// MARK: - O5NudgeDataSource
+
+extension OmniPumpManager: O5NudgeDataSource {
+
+    /// Stores the latest glucose reading for the O5 nudge controller.
+    /// Called by Loop's LoopDataManager when new CGM data is available.
+    func updateLatestGlucoseForO5(mgdl: Int, date: Date) {
+        setState { state in
+            state.podState?.latestGlucoseMgdl = mgdl
+            state.podState?.latestGlucoseDate = date
+        }
+    }
+
+    func latestGlucose() -> (mgdl: Int, date: Date)? {
+        guard let mgdl = state.podState?.latestGlucoseMgdl,
+              let date = state.podState?.latestGlucoseDate else { return nil }
+        return (mgdl: mgdl, date: date)
+    }
+
+    func recentDoseHistory(since: Date) -> [(startDate: Date, endDate: Date, deliveredUnits: Double, isBasal: Bool)] {
+        guard let podState = state.podState else { return [] }
+        var doses: [(startDate: Date, endDate: Date, deliveredUnits: Double, isBasal: Bool)] = []
+        let now = Date()
+
+        if let tempBasal = podState.unfinalizedTempBasal,
+           (tempBasal.finishTime ?? now) > since {
+            doses.append((
+                startDate: tempBasal.startTime,
+                endDate: tempBasal.finishTime ?? now,
+                deliveredUnits: tempBasal.units,
+                isBasal: true
+            ))
+        }
+
+        if let bolus = podState.unfinalizedBolus,
+           (bolus.finishTime ?? now) > since {
+            doses.append((
+                startDate: bolus.startTime,
+                endDate: bolus.finishTime ?? now,
+                deliveredUnits: bolus.units,
+                isBasal: false
+            ))
+        }
+
+        return doses
+    }
+
+    func currentGlucoseTargets() -> [(startTime: TimeInterval, targetMgdl: Double)]? {
+        guard let schedule = state.podState?.glucoseTargetSchedule else { return nil }
+        return schedule.map { (startTime: $0.startTime, targetMgdl: $0.value) }
+    }
+
+    func currentCorrectionFactors() -> [(startTime: TimeInterval, isf: Double)]? {
+        guard let schedule = state.podState?.correctionFactorSchedule else { return nil }
+        return schedule.map { (startTime: $0.startTime, isf: $0.value) }
+    }
+
+    func isActivityModeRequested() -> (active: Bool, duration: Int, intensity: Int)? {
+        guard let podState = state.podState else { return nil }
+        return (active: podState.activityModeRequested,
+                duration: podState.activityModeDuration,
+                intensity: podState.activityModeIntensity)
     }
 }
