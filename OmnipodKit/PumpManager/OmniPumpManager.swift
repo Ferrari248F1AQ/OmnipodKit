@@ -1344,8 +1344,11 @@ extension OmniPumpManager {
 
         // Convert the basal schedule into a rough TDI estimate
         let basalSchedule = state.basalSchedule
-        let totalBasalPerDay = basalSchedule.entries.reduce(0.0, { total, entry in
-            let duration = entry.duration > 0 ? entry.duration : 1800
+        let entries = basalSchedule.entries
+        let totalBasalPerDay = entries.enumerated().reduce(0.0, { total, pair in
+            let (index, entry) = pair
+            let nextStart = index + 1 < entries.count ? entries[index + 1].startTime : TimeInterval(hours: 24)
+            let duration = nextStart - entry.startTime
             return total + entry.rate * (duration / 3600.0)
         })
         // Approximate TDI: basal is typically ~50% of total daily insulin
