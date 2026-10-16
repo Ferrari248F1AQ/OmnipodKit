@@ -27,6 +27,33 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
         self.podState = podState
     }
 
+    // MARK: - O5 AID state mutations
+
+    mutating func updateO5AlgorithmMode(_ mode: O5AlgorithmMode) {
+        podState?.o5AlgorithmMode = mode
+    }
+
+    mutating func updateO5AidStatus(_ status: O5AidStatus) {
+        podState?.o5AidStatus = status
+    }
+
+    mutating func updateO5BleTransportState(_ transportState: BleMessageTransportState) {
+        podState?.bleMessageTransportState = transportState
+    }
+
+    mutating func updateO5TherapySchedules(
+        correctionFactors: [O5ScheduleEntry]?,
+        glucoseTargets: [O5ScheduleEntry]?
+    ) {
+        podState?.correctionFactorSchedule = correctionFactors
+        podState?.glucoseTargetSchedule = glucoseTargets
+    }
+
+    mutating func updateO5LatestGlucose(mgdl: Int, date: Date) {
+        podState?.latestGlucoseMgdl = mgdl
+        podState?.latestGlucoseDate = date
+    }
+
     var timeZone: TimeZone
 
     var basalSchedule: BasalSchedule

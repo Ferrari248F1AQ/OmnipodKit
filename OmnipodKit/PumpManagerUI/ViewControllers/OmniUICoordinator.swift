@@ -279,7 +279,7 @@ class OmniUICoordinator: UINavigationController, PumpManagerOnboarding, Completi
             pumpManagerOnboardingDelegate?.pumpManagerOnboarding(didCreatePumpManager: pumpManager)
 
             // Build O5TherapyConfig from Loop's current therapy settings if this is an O5 pod
-            let therapyConfig: O5TherapyConfig? = podType.isO5 ? pumpManager.buildTherapyConfigFromCurrentSettings() : nil
+            let therapyConfig: O5TherapyConfig? = pumpManager.podType.isO5 ? pumpManager.buildTherapyConfigFromCurrentSettings() : nil
 
             let viewModel = PairPodViewModel(podPairer: pumpManager, therapyConfig: therapyConfig)
 

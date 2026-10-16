@@ -43,6 +43,16 @@ struct BasalSuggestion {
     let suggestedRate: Double      // U/hr
     let confidence: Double         // 0-1
     let reason: String
+    let driftRate: Double          // mg/dL per hour (fasting BG drift)
+
+    var timeBlock: TimeBlockLabel {
+        TimeBlockLabel(startTime: startTime, endTime: endTime)
+    }
+
+    var changePercent: Double {
+        guard currentRate > 0 else { return 0 }
+        return (suggestedRate - currentRate) / currentRate
+    }
 }
 
 struct ISFSuggestion {
@@ -52,6 +62,16 @@ struct ISFSuggestion {
     let suggestedISF: Double
     let confidence: Double
     let reason: String
+    let observedMedianISF: Double  // median observed ISF from corrections
+
+    var timeBlock: TimeBlockLabel {
+        TimeBlockLabel(startTime: startTime, endTime: endTime)
+    }
+
+    var changePercent: Double {
+        guard currentISF > 0 else { return 0 }
+        return (suggestedISF - currentISF) / currentISF
+    }
 }
 
 struct ICRSuggestion {
@@ -61,6 +81,16 @@ struct ICRSuggestion {
     let suggestedICR: Double
     let confidence: Double
     let reason: String
+    let observedMedianICR: Double  // median observed ICR from meals
+
+    var timeBlock: TimeBlockLabel {
+        TimeBlockLabel(startTime: startTime, endTime: endTime)
+    }
+
+    var changePercent: Double {
+        guard currentICR > 0 else { return 0 }
+        return (suggestedICR - currentICR) / currentICR
+    }
 }
 
 struct RegressionReport {
@@ -76,12 +106,39 @@ struct RegressionReport {
     let glucoseVariability: Double  // coefficient of variation
     let totalDataPoints: Int
     let dataQuality: DataQuality
+    let glucoseSampleCount: Int
+    let doseSampleCount: Int
+    let carbEntrySampleCount: Int
 
     enum DataQuality: String {
         case excellent = "excellent"  // >90% coverage
         case good = "good"            // 70-90%
         case fair = "fair"            // 50-70%
         case insufficient = "insufficient" // <50%
+
+        var displayName: String {
+            switch self {
+            case .excellent: return "Excellent"
+            case .good: return "Good"
+            case .fair: return "Fair"
+            case .insufficient: return "Insufficient"
+            }
+        }
+    }
+}
+
+typealias DataQuality = RegressionReport.DataQuality
+
+// MARK: - Time Block Label (for ForEach id and display)
+
+struct TimeBlockLabel: Hashable {
+    let startTime: TimeInterval
+    let endTime: TimeInterval
+
+    var displayName: String {
+        let startHour = Int(startTime) / 3600
+        let endHour = Int(endTime) / 3600
+        return String(format: "%02d:00–%02d:00", startHour, endHour)
     }
 }
 
@@ -189,7 +246,10 @@ struct O5SmartRegression {
             timeAboveRange: glucoseMetrics.timeAboveRange,
             glucoseVariability: glucoseMetrics.cv,
             totalDataPoints: windowGlucose.count,
-            dataQuality: dataQuality
+            dataQuality: dataQuality,
+            glucoseSampleCount: windowGlucose.count,
+            doseSampleCount: windowInsulin.count,
+            carbEntrySampleCount: windowCarbs.count
         )
     }
 
@@ -352,7 +412,8 @@ struct O5SmartRegression {
                     currentRate: currentRate,
                     suggestedRate: clampedRate,
                     confidence: confidence,
-                    reason: "Fasting BG \(direction) ~\(String(format: "%.1f", abs(driftRate))) mg/dL/hr in \(block.label)"
+                    reason: "Fasting BG \(direction) ~\(String(format: "%.1f", abs(driftRate))) mg/dL/hr in \(block.label)",
+                    driftRate: driftRate
                 ))
             }
         }
@@ -434,7 +495,8 @@ struct O5SmartRegression {
                     currentISF: currentISF,
                     suggestedISF: round(clampedISF),
                     confidence: confidence,
-                    reason: "Observed ISF ~\(String(format: "%.0f", medianISF)) vs current \(String(format: "%.0f", currentISF)) in \(block.label) (\(observedISFs.count) corrections)"
+                    reason: "Observed ISF ~\(String(format: "%.0f", medianISF)) vs current \(String(format: "%.0f", currentISF)) in \(block.label) (\(observedISFs.count) corrections)",
+                    observedMedianISF: medianISF
                 ))
             }
         }
@@ -530,7 +592,8 @@ struct O5SmartRegression {
                     currentICR: currentICR,
                     suggestedICR: round(clampedICR * 10) / 10,
                     confidence: confidence,
-                    reason: "Observed ICR ~\(String(format: "%.1f", medianICR)) vs current \(String(format: "%.1f", currentICR)) in \(block.label) (\(observedICRs.count) meals)"
+                    reason: "Observed ICR ~\(String(format: "%.1f", medianICR)) vs current \(String(format: "%.1f", currentICR)) in \(block.label) (\(observedICRs.count) meals)",
+                    observedMedianICR: medianICR
                 ))
             }
         }

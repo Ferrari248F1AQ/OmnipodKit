@@ -598,11 +598,11 @@ class OmniSettingsViewModel: ObservableObject {
 
     func refreshRegressionReport() {
         let basalSchedule = pumpManager.state.podState?.glucoseTargetSchedule?.map {
-            (startTime: $0.startTime, rate: $0.targetMgdl)
+            (startTime: $0.startTime, rate: $0.value)
         } ?? [(startTime: 0, rate: 1.0)]
 
         let isfSchedule = pumpManager.state.podState?.correctionFactorSchedule?.map {
-            (startTime: $0.startTime, mgdlPerUnit: $0.isf)
+            (startTime: $0.startTime, mgdlPerUnit: $0.value)
         } ?? [(startTime: 0, mgdlPerUnit: 50.0)]
 
         let icrSchedule: [(startTime: TimeInterval, gramsPerUnit: Double)] = [(startTime: 0, gramsPerUnit: 10.0)]

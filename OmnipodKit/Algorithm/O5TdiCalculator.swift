@@ -71,7 +71,7 @@ struct O5TdiCalculator {
         }
 
         // Analyze data continuity — mirrors getDataTimeAndGapTime()
-        let (dataSeconds, gapSeconds, gaps) = analyzeDataContinuity(
+        let (dataSeconds, gapSeconds, _) = analyzeDataContinuity(
             doses: relevantDoses,
             windowStart: windowStart,
             windowEnd: now

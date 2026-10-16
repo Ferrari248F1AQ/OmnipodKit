@@ -1344,10 +1344,10 @@ extension OmniPumpManager {
 
         // Convert the basal schedule into a rough TDI estimate
         let basalSchedule = state.basalSchedule
-        let totalBasalPerDay = basalSchedule.entries.reduce(0.0) { total, entry in
+        let totalBasalPerDay = basalSchedule.entries.reduce(0.0, { total, entry in
             let duration = entry.duration > 0 ? entry.duration : 1800
             return total + entry.rate * (duration / 3600.0)
-        }
+        })
         // Approximate TDI: basal is typically ~50% of total daily insulin
         let estimatedTDI = totalBasalPerDay * 2.0
 
@@ -1365,7 +1365,7 @@ extension OmniPumpManager {
         get { return state.podState?.o5AlgorithmMode ?? .loopAlgorithm }
         set {
             setState { state in
-                state.podState?.o5AlgorithmMode = newValue
+                state.updateO5AlgorithmMode(newValue)
             }
         }
     }
@@ -1392,14 +1392,14 @@ extension OmniPumpManager {
         do {
             let aidStatus = try o5NudgeController.performNudgeCycle(transport: transport)
             setState { state in
-                state.podState?.o5AidStatus = aidStatus
-                state.podState?.bleMessageTransportState = BleMessageTransportState(
+                state.updateO5AidStatus(aidStatus)
+                state.updateO5BleTransportState(BleMessageTransportState(
                     ck: transport.ck,
                     noncePrefix: transport.noncePrefix,
                     msgSeq: transport.msgSeq,
                     nonceSeq: transport.nonceSeq,
                     messageNumber: transport.messageNumber
-                )
+                ))
             }
         } catch {
             log.error("O5 Nudge cycle failed: %{public}@", String(describing: error))
@@ -2599,12 +2599,14 @@ extension OmniPumpManager: PumpManager {
         glucoseTargets: [(TimeInterval, Double)]
     ) {
         setState { state in
-            state.podState?.correctionFactorSchedule = insulinSensitivities.map {
-                O5ScheduleEntry(startTime: $0.0, value: $0.1)
-            }
-            state.podState?.glucoseTargetSchedule = glucoseTargets.map {
-                O5ScheduleEntry(startTime: $0.0, value: $0.1)
-            }
+            state.updateO5TherapySchedules(
+                correctionFactors: insulinSensitivities.map {
+                    O5ScheduleEntry(startTime: $0.0, value: $0.1)
+                },
+                glucoseTargets: glucoseTargets.map {
+                    O5ScheduleEntry(startTime: $0.0, value: $0.1)
+                }
+            )
         }
     }
 
@@ -3651,8 +3653,7 @@ extension OmniPumpManager: O5NudgeDataSource {
     /// Called by Loop's LoopDataManager when new CGM data is available.
     func updateLatestGlucoseForO5(mgdl: Int, date: Date) {
         setState { state in
-            state.podState?.latestGlucoseMgdl = mgdl
-            state.podState?.latestGlucoseDate = date
+            state.updateO5LatestGlucose(mgdl: mgdl, date: date)
         }
     }
 
