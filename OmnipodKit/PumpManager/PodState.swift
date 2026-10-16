@@ -247,6 +247,13 @@ public struct PodState: RawRepresentable, Equatable, CustomDebugStringConvertibl
         return fault != nil || setupProgress == .activationTimeout || setupProgress == .podIncompatible
     }
 
+    /// Does this pod have no silent beep type available (is noBeepNonCancel non-silent)?
+    /// So far this has only been found in the newer the Omnipod 5 "black dot" pods
+    /// which have had firmware verision starting with "12.0". Assume later firmware
+    var noSilentBeep: Bool {
+        return podType.isO5 && firmwareVersion.hasPrefix("12.")
+    }
+
     // MARK: - 32-bit message nonce var's and func's
 
     var currentNonce: UInt32 {
@@ -704,7 +711,7 @@ public struct PodState: RawRepresentable, Equatable, CustomDebugStringConvertibl
                     let controllerId = controllerIdForPodId(podId: address)
                     self.signingKey = try? O5CertificateStore(controllerId: controllerId).signingKey.rawRepresentation
                     if self.signingKey == nil {
-                        // Without a saved signingKey as well as the needed certificate for pdmId,
+                        // Without a saved signingKey as well as the needed certificate for controllerId,
                         // this pod will not be able to do any insulin, cancel, or deactivation commands.
                         // This should only occur for an artificially created testing situation.
                         log.default("@@@ initializion failed for 0x%08X, continuing in limited mode...", controllerId)
@@ -847,7 +854,7 @@ public struct PodState: RawRepresentable, Equatable, CustomDebugStringConvertibl
             "* primeFinishTime: \(optionalString(primeFinishTime))",
             "* configuredAlerts: \(configuredAlertsString(configuredAlerts: configuredAlerts))",
             "* insulinType: \(optionalString(insulinType))",
-            "* messageTransportState: \(podType.usesRileyLink ? String(describing: erosMessageTransportState) : String(describing: bleMessageTransportState))",
+            "* messageTransportState: \(podType.isEros ? String(describing: erosMessageTransportState) : String(describing: bleMessageTransportState))",
             "* pdmRef: \(optionalString(fault?.pdmRef))",
             "* fault: \(optionalString(fault))",
         ].joined(separator: "\n")

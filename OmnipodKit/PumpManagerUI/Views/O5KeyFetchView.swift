@@ -15,6 +15,8 @@ struct O5KeyFetchView: View {
     @State private var errorDetail: String?
     @State private var currentStep: O5KeyFetchProgress?
 
+    // Token prompt: shown only when the server reports access is gated behind a setup
+    // token. The token is held in memory for the duration of the fetch and never persisted.
     @State private var showTokenPrompt = false
     @State private var token = ""
     @State private var tokenContinuation: ((String?) -> Void)?

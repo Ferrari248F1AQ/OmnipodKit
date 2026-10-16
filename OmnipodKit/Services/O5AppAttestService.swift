@@ -27,6 +27,8 @@ struct O5AuthError: Error {
     }
 }
 
+/// Ordered phases of the keypair fetch flow. UI consumers can use `index` /
+/// `totalSteps` to drive a determinate progress bar.
 enum O5KeyFetchProgress: Int, CaseIterable {
     case checkingInternetConnection
     case checkingKeymanagerServiceStatus
@@ -70,8 +72,19 @@ class O5AppAttestService {
         return URLSession(configuration: config)
     }()
 
+    /// Bearer token used to authenticate keymanager calls. Set mid-flow only when the
+    /// status endpoint reports `available:false` + `authSupported:true`; once set, it is
+    /// attached to every subsequent request via `performRequest`. Held in memory only —
+    /// never persisted.
     private var authToken: String?
 
+    /// Runs the full App Attest + keypair fetch flow.
+    /// Calls `progress` on the main queue before starting each phase, then `completion`
+    /// on the main queue with the final result.
+    ///
+    /// `requestToken` is invoked (on the main queue) only when the server reports that
+    /// access is gated behind a setup token. The UI should prompt the user and call the
+    /// supplied callback with the entered token, or `nil` to cancel.
     func fetchKeypair(
         progress: @escaping (O5KeyFetchProgress) -> Void = { _ in },
         requestToken: @escaping (@escaping (String?) -> Void) -> Void = { $0(nil) },
@@ -131,6 +144,8 @@ class O5AppAttestService {
             throw O5AuthError(message: "App Attest is not supported on this device.")
         }
 
+        // Resolve app identity early so failures (e.g. missing team ID) surface before
+        // we burn an App Attest key generation, and so the user sees which step failed.
         progress(.resolvingAppIdentity)
         let appId = try getAppId()
 
@@ -155,6 +170,11 @@ class O5AppAttestService {
 
     // MARK: - Pre-flight checks
 
+    /// One-shot link-layer reachability check followed by a DNS resolution of the
+    /// keymanager host. Throws an offline-flavored `O5AuthError` when the device has
+    /// no usable path, or a DNS-flavored one when the host can't be resolved, within
+    /// `timeout`. Still optimistic — cannot detect captive portals; those surface as
+    /// URLErrors from later HTTP requests.
     private func checkInternetConnection(timeout: TimeInterval = 2.0) async throws {
         let monitor = NWPathMonitor()
         defer { monitor.cancel() }
@@ -188,6 +208,9 @@ class O5AppAttestService {
                     comment: "O5 fetch failure: offline at pre-flight, recovery suggestion"))
         }
 
+        // Resolve the keymanager host so DNS failures surface here as a clear
+        // pre-flight error rather than an opaque URLError on the first HTTP call.
+        // Retry a couple of times (1s apart) to ride out transient resolver hiccups.
         if let host = URL(string: o5KeyManagerBaseURL)?.host {
             let maxAttempts = 3
             var resolved = false
@@ -203,7 +226,7 @@ class O5AppAttestService {
             if !resolved {
                 throw O5AuthError(
                     message: LocalizedString(
-                        "Couldn't look up the key-management server.",
+                        "Couldn’t look up the key-management server.",
                         comment: "O5 fetch failure: DNS resolution failed, primary line"),
                     recoverySuggestion: LocalizedString(
                         "Please check your Internet connection and try again.",
@@ -212,6 +235,9 @@ class O5AppAttestService {
         }
     }
 
+    /// Resolves `host` via `getaddrinfo` on a background queue, returning `true` on
+    /// success. Races the lookup against `timeout` so a hung resolver can't stall the
+    /// flow; a late-returning lookup simply no-ops against the already-resumed continuation.
     private func resolveHostname(_ host: String, timeout: TimeInterval) async -> Bool {
         await withCheckedContinuation { continuation in
             let queue = DispatchQueue(label: "org.nightscout.o5-dns")
@@ -238,12 +264,23 @@ class O5AppAttestService {
         }
     }
 
+    /// Outcome of the service-status check.
     private enum ServerStatus {
+        /// `available: true` — proceed with the normal (unauthenticated) flow.
         case available
+        /// `available: false` + `authSupported: true` — access is gated behind a
+        /// setup token; prompt the user and authenticate subsequent calls.
         case authRequired
+        /// `available: false` (auth not supported) — surface the server message and abort.
         case unavailable(message: String, statusCode: Int?)
     }
 
+    /// Calls the OSAID Keymanager service-status endpoint and classifies the response.
+    /// When the server reports `available: false`, an `authSupported: true` flag diverts
+    /// the flow into token-gated authentication; otherwise the user-facing `message` is
+    /// surfaced verbatim and the flow aborts. Non-2xx HTTP and transport failures flow
+    /// through the existing `performRequest` → `authError` path. Unparseable 2xx responses
+    /// are treated as failures (fail-closed), not as implicit availability.
     private func checkServerStatus() async throws -> ServerStatus {
         var request = URLRequest(url: URL(string: "\(o5KeyManagerBaseURL)/api/status/ios")!)
         request.httpMethod = "POST"
@@ -277,6 +314,8 @@ class O5AppAttestService {
 
         if available { return .available }
 
+        // Gated availability: the server is reachable but withholding public access,
+        // and explicitly advertises token-based auth. Anything else fails closed.
         if json["authSupported"] as? Bool == true {
             return .authRequired
         }
@@ -320,6 +359,13 @@ class O5AppAttestService {
         return "\(teamId).\(bundleId)"
     }
 
+    /// Resolves the Apple Team ID across environments. Tries, in order:
+    ///   1. The signed `embedded.mobileprovision` (real-device / TestFlight / App Store builds)
+    ///   2. The Keychain access-group prefix (works in simulator and on device whenever
+    ///      the process has a code-signing identity — does not require a provisioning profile)
+    ///   3. An `OmnipodKitTeamIdentifier` key in OmnipodKit's Info.plist, populated from the
+    ///      `$(DEVELOPMENT_TEAM)` build setting (last-ditch override for environments
+    ///      where neither runtime source is available, e.g. unsigned test harnesses).
     private func getTeamId() -> String? {
         if let id = teamIdFromMobileProvision(), !id.isEmpty { return id }
         if let id = teamIdFromKeychainAccessGroup(), !id.isEmpty { return id }
@@ -333,6 +379,7 @@ class O5AppAttestService {
             return nil
         }
 
+        // The mobileprovision file is a CMS signed plist. Find the plist XML within it.
         guard let plistString = String(data: data, encoding: .ascii),
               let plistStart = plistString.range(of: "<?xml"),
               let plistEnd = plistString.range(of: "</plist>") else {
@@ -349,6 +396,8 @@ class O5AppAttestService {
         return teamId
     }
 
+    /// Adds (or finds) a probe Keychain item and reads its `kSecAttrAccessGroup`,
+    /// which iOS prefixes with the team ID: `<TEAMID>.<bundleId>`.
     private func teamIdFromKeychainAccessGroup() -> String? {
         let probeAccount = "org.nightscout.o5.teamid-probe"
         let probeService = "org.nightscout.o5.teamid-probe"
@@ -383,6 +432,9 @@ class O5AppAttestService {
         return String(prefix)
     }
 
+    /// Reads `OmnipodKitTeamIdentifier` from OmnipodKit's Info.plist. The xcconfig
+    /// substitutes `$(DEVELOPMENT_TEAM)` at build time. We read from the framework's
+    /// bundle (not `Bundle.main`) because the substitution happens in OmnipodKit's plist.
     private func teamIdFromInfoPlist() -> String? {
         let frameworkBundle = Bundle(for: O5AppAttestService.self)
         return frameworkBundle.object(forInfoDictionaryKey: "OmnipodKitTeamIdentifier") as? String

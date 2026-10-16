@@ -81,8 +81,8 @@ extension OmniPumpManagerError: LocalizedError {
     }
 }
 
-// OmniPumpManager is declared as a derived class RileyLinkPumpManager
-// even though for non-Eros pods the RileyLink code will not be used.
+/// OmniPumpManager is derived from RileyLinkPumpManager and not just DeviceManager.
+/// The RileyLinkPumpManager will be used for basic Eros pod comms and the PKA RileyLink option.
 public class OmniPumpManager: RileyLinkPumpManager {
 
     // This string should match the PumpManagerIdentifier string.
@@ -138,21 +138,20 @@ public class OmniPumpManager: RileyLinkPumpManager {
         self.podComms.delegate = self
         self.podComms.messageLogger = self
 
-        // If Eros, register for RileyLink device notifications
-        if podType.isEros {
-            NotificationCenter.default.publisher(for: .DeviceConnectionStateDidChange)
-                .sink { [weak self] _ in
-                    self?.updateRLConnectionStatus()
-                }
-                .store(in: &cancellables)
-        }
+        /// Register for RL device notifications for Eros and DASH (possibly needed for the Pod Keep Alive RileyLink option)
+        NotificationCenter.default.publisher(for: .DeviceConnectionStateDidChange)
+            .sink { [weak self] _ in
+                self?.updateRLConnectionStatus()
+            }
+            .store(in: &cancellables)
 
         // Wire O5 nudge controller data source
         if podType.isO5 {
             o5NudgeController.dataSource = self
         }
 
-        if podType.isDash {
+        /// Register for app foreground / background notifications needed for at least Pod Keep Alive timer based options
+        if !podType.isEros {
             let nc = NotificationCenter.default
             nc.addObserver(
                 self,
@@ -166,15 +165,10 @@ public class OmniPumpManager: RileyLinkPumpManager {
                 name: UIApplication.willEnterForegroundNotification,
                 object: nil
             )
-
-            // Needed setup if pod keep alives might be used
-            podKeepAliveSetup(refresh: refresh)
         }
-    }
 
-    func refresh() {
-        // run in a separate thread?
-        getPodStatus(canOptimize: true) { _ in }
+        /// Initialize or disable the podKeepAlive state as needed
+        self.podKeepAlive = state.podKeepAlive
     }
 
     public required convenience init?(rawState: PumpManager.RawStateValue) {
@@ -258,7 +252,23 @@ public class OmniPumpManager: RileyLinkPumpManager {
             }
         }
 
-        if oldValue.podState != newValue.podState {
+        /// This block depends on handlePodFault() handling any interrupted
+        /// dosing issues for a pod fault before actually setting podState.fault.
+        if oldValue.podState?.fault == nil && newValue.podState?.fault != nil {
+            /// Transitioning to a faulted state. With handlePodFault() now calling updateFromStatusResponse()
+            /// before setting podState.fault, any canceled doses are already finalized and self.lastSync used
+            /// for lastReconciliation has already been properly initialized by the PodState update mechanisms.
+            /// Call store() now in case this fault occured on some path that won't be calling store() on fault.
+            /// There is no need to handle any store() errors here as this particular call doesn't remove doses.
+            /// These doses will be re-stored again on the first path using dosesToStore() with store()
+            /// which if successful, will remove finalizedDoses and updates lastPumpDataReportDate.
+            if let finalizedDoses = state.podState?.finalizedDoses {
+                store(doses: finalizedDoses, completion: { _ in })
+            }
+        }
+
+        /// Notify podState observers of any podState or silencePod state changes
+        if oldValue.podState != newValue.podState || oldValue.silencePod != newValue.silencePod {
             podStateObservers.forEach { (observer) in
                 observer.podStateDidUpdate(newValue.podState)
             }
@@ -276,12 +286,21 @@ public class OmniPumpManager: RileyLinkPumpManager {
             }
 
             if oldValue.podState?.setupProgress != newValue.podState?.setupProgress, newValue.podState?.setupProgress == .completed {
+                let podType = newValue.podType
                 self.pumpDelegate.notify() { (delegate) in
                     let date = Date()
-                    let event = NewPumpEvent(date: date, dose: nil, raw: "Pod Change \(date)".data(using: .utf8)!, title: "Pod Change", type: .replaceComponent(componentType: .pump))
+                    let title = String(format: LocalizedString("Pod Change (%@)", comment: "Pump event title for a newly paired pod (1: pod type)"), podType.description)
+                    let event = NewPumpEvent(date: date, dose: nil, raw: "Pod Change \(date)".data(using: .utf8)!, title: title, type: .replaceComponent(componentType: .pump))
                     delegate?.pumpManager(self, hasNewPumpEvents: [event], lastReconciliation: self.lastSync, replacePendingEvents: false) { _ in }
+                    delegate?.deviceManager(self, recordAnalyticsEvent: "Pod Paired", properties: ["podType": podType.briefName])
                 }
             }
+        }
+
+        // Once the delegate has been asked to remove this pump manager, a late state write (e.g. from
+        // an async RileyLink disconnect) must not reach it, or the host may re-adopt this manager.
+        guard !lockedIsDeactivating.value else {
+            return returnType
         }
 
         // Ideally we ensure that oldValue.rawValue != newValue.rawValue, but the types aren't
@@ -298,6 +317,8 @@ public class OmniPumpManager: RileyLinkPumpManager {
     }
 
     private let lockedState: Locked<OmniPumpManagerState>
+
+    private let lockedIsDeactivating = Locked(false)
 
     private let statusObservers = WeakSynchronizedSet<PumpManagerStatusObserver>()
 
@@ -324,10 +345,31 @@ public class OmniPumpManager: RileyLinkPumpManager {
     }
 
     public func setMustProvideBLEHeartbeat(_ mustProvideBLEHeartbeat: Bool) {
-        if self.state.podType.usesRileyLink {
-            rileyLinkDeviceProvider.timerTickEnabled = self.state.isPumpDataStale || mustProvideBLEHeartbeat
+        // Bridge the legacy boolean entry point through the richer request path (no reading-schedule
+        // detail — fall back to a default cadence in that case).
+        setBLEHeartbeatRequest(mustProvideBLEHeartbeat
+            ? PumpHeartbeatRequest(lastCGMReadingDate: nil, expectedCGMReadingInterval: .minutes(5))
+            : nil)
+    }
+
+    public func setBLEHeartbeatRequest(_ request: PumpHeartbeatRequest?) {
+        // Log at the call site so we capture exactly what Loop requests and when — provideHeartbeat
+        // isn't persisted, so reading it elsewhere can be stale relative to this call.
+        let pid = ProcessInfo.processInfo.processIdentifier
+        let mustProvide = request != nil
+        let desc = request.map { "last=\($0.lastCGMReadingDate.map { String(describing: $0) } ?? "nil") interval=\(Int($0.expectedCGMReadingInterval))s" } ?? "nil"
+        logDeviceCommunication("[heartbeat] pid=\(pid) setBLEHeartbeatRequest(\(desc))", type: .connection)
+        let rileyLinkIsInUse = self.state.podType.isEros || self.state.podKeepAlive == .rileyLink
+        if rileyLinkIsInUse {
+            rileyLinkDeviceProvider.timerTickEnabled =
+                self.state.isPumpDataStale || mustProvide || /// RL ticks needed for traditional BLE wakeups
+                self.state.podKeepAlive == .rileyLink /// RL ticks needed for PodKeepAlive rileyLink option
         } else {
-            provideHeartbeat = mustProvideBLEHeartbeat
+            provideHeartbeat = mustProvide
+            // BLE pod: when the host needs us to provide the heartbeat (e.g. a CGM that can't), run the
+            // delayed-connect loop for periodic background wakes, scheduled from the CGM reading time;
+            // otherwise stay disconnected + alarm-scan and connect on demand.
+            (podComms as? BlePodComms)?.setHeartbeatRequest(request)
         }
     }
 
@@ -365,10 +407,33 @@ public class OmniPumpManager: RileyLinkPumpManager {
 
     private func issueHeartbeatIfNeeded() {
         if self.provideHeartbeat, dateGenerator().timeIntervalSince(lastHeartbeat) > .minutes(2) {
+            logDeviceCommunication("[heartbeat] pumpManagerBLEHeartbeatDidFire — Loop cycle triggered", type: .connection)
             self.pumpDelegate.notify { (delegate) in
                 delegate?.pumpManagerBLEHeartbeatDidFire(self)
             }
             self.lastHeartbeat = Date()
+        }
+    }
+
+    func omnipodLogDeviceEvent(_ message: String) {
+        logDeviceCommunication(message, type: .connection)
+    }
+
+    func omnipodHeartbeatDidFire() {
+        // A pump-provided heartbeat wake (delayed-connect probe) completed — run a Loop cycle. Loop's
+        // resulting status/dose commands connect on demand (which preempts the re-armed probe).
+        issueHeartbeatIfNeeded()
+    }
+
+    func omnipodDidDetectAlert(slots: AlertSet) {
+        // A pod alert was detected connectionlessly (from the advertisement). Connect on demand and read
+        // the real pod status: getPodStatus surfaces newly-active alerts to Loop via alertsChanged ->
+        // issueAlert. This turns the low-power advert wake into a real Loop alert with accurate details.
+        logDeviceCommunication("[POD-ALERT] detected \(slots) from advertisement — fetching pod status to surface it", type: .connection)
+        getPodStatus(canOptimize: false) { result in
+            if case .failure(let error) = result {
+                self.log.error("omnipodDidDetectAlert: getPodStatus failed: %{public}@", String(describing: error))
+            }
         }
     }
 
@@ -397,23 +462,19 @@ public class OmniPumpManager: RileyLinkPumpManager {
         }
     }
 
-    private let backgroundTask = BackgroundTask()
+    private let silentTune = SilentTune()
+
     @objc func appMovedToBackground() {
-        backgroundTask.startBackgroundTask(hasPod: state.podState != nil)
+        podKeepAliveAppDidEnterBackground()
+        /// If using Silent Tune pod keep alives and a pod, starting playing the silent tune.
+        if state.podKeepAlive == .silentTune && state.podState != nil {
+            silentTune.startPlayer()
+        }
     }
 
     @objc func appMovedToForeground() {
-        backgroundTask.stopBackgroundTask()
-    }
-
-    typealias syncSilencePodStateFuncType = (_ silencePod: Bool, _ silencePodEnd: Date?) -> Void
-
-    /// Function to be called when silencePod variables are updated
-    private var syncSilencePodState: syncSilencePodStateFuncType?
-
-    /// Initializes the resetSilencePodState var for callbacks when silence pod mode has changed
-    func setSyncSilencePodState(_ callbackFunc: @escaping syncSilencePodStateFuncType) {
-        syncSilencePodState = callbackFunc
+        podKeepAliveAppWillEnterForeground()
+        silentTune.stopPlayer()
     }
 
 
@@ -422,8 +483,8 @@ public class OmniPumpManager: RileyLinkPumpManager {
     // Adapted from OmniKit/OmniKitUI/ViewModel/OmnipodSettingsViewModel:updateConnectionStatus().
     // Maintains the private rileyLinkConnected variable and notifies about RL connection updates.
     func updateRLConnectionStatus() {
-        guard self.podComms is ErosPodComms else {
-            return
+        guard podType.isEros else {
+            return /// not relevant for other pod types including the Pod Keep Alive rileyLink option
         }
 
         rileyLinkDeviceProvider.getDevices { (devices) in
@@ -433,6 +494,17 @@ public class OmniPumpManager: RileyLinkPumpManager {
                 self.rileylinkConnected = isRLConnected
                 // Notify UI about a connection change using the updated RL connection state
                 self.notifyPodConnectionStateDidChange(isConnected: isRLConnected)
+            }
+        }
+    }
+
+    /// Disconnect any RileyLink devices
+    private func disconnectRileyLinkDevices() {
+        rileyLinkDeviceProvider.getDevices { devices in
+            for device in devices {
+                /// This also removes the device from autoConnectIDs
+                self.log.debug("@@@ force disconnect from %{public}@", device.name ?? device.deviceURI)
+                self.rileyLinkDeviceProvider.disconnect(device)
             }
         }
     }
@@ -463,6 +535,9 @@ public class OmniPumpManager: RileyLinkPumpManager {
         pumpDelegate.notify { (delegate) in
             delegate?.pumpManagerBLEHeartbeatDidFire(self)
         }
+        if state.podKeepAlive == .rileyLink {
+            rileyLinkTimerDidTick()
+        }
     }
 
     public override func device(_ device: RileyLinkDevice, didUpdateBattery level: Int) {
@@ -489,7 +564,7 @@ public class OmniPumpManager: RileyLinkPumpManager {
 
     public override var debugDescription: String {
         var retVal: String = "## OmniPumpManager\n"
-        if state.podType.usesRileyLink {
+        if state.podType.isEros {
             retVal += super.debugDescription
         } else {
             retVal += "* provideHeartbeat: \(provideHeartbeat)\n"
@@ -665,9 +740,6 @@ extension OmniPumpManager {
             doSetSilencePod(session: session, silencePod: false, silencePodEnd: nil) { error in
                 if let error = error {
                     self.log.default("@@@ handleSilencePodEnd: disable silence mode failed: %{public}@", error.localizedDescription)
-                } else {
-                    // Call back to sync the UI silence pod state variables
-                    self.syncSilencePodState?(false, nil)
                 }
             }
         }
@@ -707,6 +779,10 @@ extension OmniPumpManager {
 
     var hasSetupPod: Bool {
         return state.hasSetupPod
+    }
+
+    var hasPairedNonFaultedPod: Bool {
+        return state.hasPairedNonFaultedPod
     }
 
     // If time remaining is negative, the pod has been expired for that amount of time.
@@ -830,6 +906,49 @@ extension OmniPumpManager {
 
     var expiresAt: Date? {
         return state.podState?.expiresAt
+    }
+
+    /// Enforces the base Pod Keep Alive mode for all BLE pods
+    var podKeepAlive: PodKeepAlive {
+        get {
+            return state.podKeepAlive
+        }
+        set {
+            let newValueToSet: PodKeepAlive
+            let defaultPKA = defaultPodKeepAliveValue(podType: self.state.podType)
+            if newValue == .disabled && defaultPKA != .disabled {
+                log.debug("@@@ Setting podKeepAlive to default %{public}@", String(describing: defaultPKA))
+                newValueToSet = defaultPKA
+            } else {
+                newValueToSet = newValue /// set podKeepAlive to the requested value
+            }
+
+            if newValueToSet == state.podKeepAlive {
+                log.debug("@@@ initializing podKeepAlive to %{public}@", String(describing: newValueToSet))
+            } else {
+                log.debug("@@@ changing podKeepAlive from %{public}@ to %{public}@",
+                          String(describing: state.podKeepAlive), String(describing: newValueToSet))
+            }
+            if state.podKeepAlive == .rileyLink && newValueToSet != .rileyLink {
+                /// Switching away from using RileyLinks, disconnect the devices
+                disconnectRileyLinkDevices()
+            }
+
+            setState { (state) in
+                state.podKeepAlive = newValueToSet
+            }
+
+            /// Now handle all the setup/teardown for timer based pod keep alive modes for the new value
+            setPodKeepAliveTimerState()
+
+            /// Reset the BluetoothManager podKeepAliveKeepsConnectedInBackground var for managing pod connections
+            (podComms as? BlePodComms)?.setPodKeepAliveKeepsConnectedInBackground(newValueToSet.keepsPodConnectedInBackground)
+
+            /// If pod keep alive value is now rileyLink, update our RL connections
+            if newValueToSet == .rileyLink {
+                updateRLConnectionStatus()
+            }
+        }
     }
 
     func buildPumpStatusHighlight(for state: OmniPumpManagerState, andDate date: Date = Date()) -> PumpStatusHighlight? {
@@ -978,7 +1097,7 @@ extension OmniPumpManager {
                 return
             }
 
-            forgetBluetoothManager()
+            forgetBluetoothConnections()
 
             let podComms: PodComms
             switch newValue {
@@ -999,6 +1118,9 @@ extension OmniPumpManager {
                 state.podType = newValue
             }
 
+            /// Pod keep alives are always disabled when switching to a new pod type
+            self.podKeepAlive = .disabled
+
             finishInit(podType: newValue)
 
             self.prepForNewPod() // reset the Id's as appropriate for the new pod type
@@ -1006,6 +1128,11 @@ extension OmniPumpManager {
         get {
             state.podType
         }
+    }
+
+    /// Running with a pod that does not have silent beep support (e.g., a "black dot" O5)
+    var noSilentBeep: Bool {
+        return state.podState?.noSilentBeep == true
     }
 
     // Reset all the per pod state kept in pump manager state which doesn't span pods
@@ -1030,6 +1157,15 @@ extension OmniPumpManager {
 
 
     // MARK: - Pod comms
+
+    /// Refresh the cached O5 controllerId / podId from the cert store after the
+    /// user has fetched or imported a new certificate. Only valid before a pod
+    /// session exists; rotating these mid-session would orphan a live pod since
+    /// the values are baked into the session keys derived at pairing time.
+    func refreshO5IdsFromCertStore() {
+        guard state.podType.isO5, state.podState == nil else { return }
+        prepForNewPod()
+    }
 
     private func prepForNewPod() {
 
@@ -1075,6 +1211,10 @@ extension OmniPumpManager {
 
         self.podComms.handleDiscardedPodDosing(podTime: podTime, reservoirLevel: reservoirLevel?.rawValue)
 
+        if let podState = state.podState {
+            reportPodEnded(podState)
+        }
+
         self.podComms.forgetPod()
 
         self.resetPerPodPumpManagerState()
@@ -1095,11 +1235,63 @@ extension OmniPumpManager {
         }
     }
 
-    // If applicable forget the BluetoothManager for current podComms
-    // to avoid future "Bluetooth use unsupported on this device" errors.
-    func forgetBluetoothManager() {
+    /// Reports the end of a pod's life as a pump event and an analytics event.
+    private func reportPodEnded(_ podState: PodState) {
+        let lifetime: TimeInterval
+        if let faultTime = podState.fault?.faultEventTimeSinceActivation {
+            /// Since the pod has a valid faultEventTimeSinceActivation, use this rather than the pod's time.
+            /// Reset type pod faults return atypical fault time values that will not be considered valid on decode.
+            lifetime = faultTime
+        } else {
+            /// Otherwise use the always increasing podTime to compute the pod’s
+            /// lifetime for reset pod faults, deactivated pods, or discarded pods.
+            let elapsed = -(podState.podTimeUpdated?.timeIntervalSinceNow ?? 0)
+            lifetime = podState.podTime + elapsed
+        }
+        var properties: [AnyHashable: Any] = [
+            "podType": podState.podType.briefName,
+            "lifetimeHours": (lifetime.hours * 10).rounded() / 10,
+        ]
+        if let fault = podState.fault {
+            properties["reason"] = "fault"
+            properties["faultCode"] = String(format: "0x%02X", fault.faultEventCode.rawValue)
+        } else if podState.deliveryStoppedAt != nil {
+            properties["reason"] = "deactivated"
+        } else {
+            properties["reason"] = "discarded"
+        }
+
+        let formatter = DateComponentsFormatter()
+        formatter.allowedUnits = [.day, .hour]
+        formatter.unitsStyle = .abbreviated
+        let title = String(format: LocalizedString("Pod Removed after %@", comment: "Pump event title when a pod ends (1: pod lifetime)"), formatter.string(from: lifetime) ?? "")
+
+        pumpDelegate.notify { (delegate) in
+            let date = Date()
+            let event = NewPumpEvent(date: date, dose: nil, raw: "Pod Removed \(date)".data(using: .utf8)!, title: title)
+            delegate?.pumpManager(self, hasNewPumpEvents: [event], lastReconciliation: self.lastSync, replacePendingEvents: false) { _ in }
+            delegate?.deviceManager(self, recordAnalyticsEvent: "Pod Ended", properties: properties)
+        }
+    }
+
+    // Stop using OmnipodKit altogether: release Bluetooth and any RileyLinks, then ask the delegate to remove us.
+    func stopUsing(completion: @escaping () -> Void) {
+        lockedIsDeactivating.value = true
+        forgetBluetoothConnections()
+        notifyDelegateOfDeactivation(completion: completion)
+    }
+
+    /// Forget all Bluetooth connections. For BLE pods call
+    /// blePodComms.forgetBluetoothManager() to avoid future
+    /// "Bluetooth use unsupported on this device" errors.
+    /// For Eros pods or if using Pod Keep Alive RileyLink mode,
+    /// call disconnectRileyLinkDevices() to release the RLs.
+    func forgetBluetoothConnections() {
         if let blePodComms = self.lockedPodComms.value as? BlePodComms {
             blePodComms.forgetBluetoothManager()
+        }
+        if state.podType.isEros || state.podKeepAlive == .rileyLink {
+            disconnectRileyLinkDevices()
         }
     }
 
@@ -1120,7 +1312,7 @@ extension OmniPumpManager {
         podState.fault = fault
 
         let podComms: PodComms
-        if state.podType.usesRileyLink {
+        if state.podType.isEros {
             let erosPodComms = ErosPodComms.init(podState: podState, podType: state.podType)
             podComms = erosPodComms
         } else {
@@ -1235,7 +1427,7 @@ extension OmniPumpManager {
         let mockCommsErrorDuringPairing = false
         let mockStartDate = Date()
         DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + .seconds(2)) {
-            if self.state.podType.usesRileyLink {
+            if self.state.podType.isEros {
                 let address: UInt32 = self.state.podState?.address ?? 0x1f1f1f1f
                 self.jumpStartPod(address: address, lotNo: 135601809, lotSeq: 0800525, startDate: mockStartDate, mockFault: mockFaultDuringPairing)
             } else {
@@ -1383,19 +1575,16 @@ extension OmniPumpManager {
                     blePodComms.connectToNewPod { result in
                         switch result {
                         case .failure(let error):
-                            completion(.failure(.communication(error as? LocalizedError)))
                             completionFailure(error as? LocalizedError)
                         case .success:
                             // Have new podState, reset all the per pod pump manager state
                             self.resetPerPodPumpManagerState()
 
-                            if self.usingInPlayPod == true && self.iPhoneWithPossibleInPlayIssues {
-                                if Storage.shared.podKeepAlive.value == .disabled {
-                                    // Enable the most conservative pod keep alive mode
-                                    // that should work through the for pod setup process.
-                                    self.log.debug("@@@ Enabling pod keep alives")
-                                    Storage.shared.podKeepAlive.value = .whenOpen
-                                }
+                            // Set the default Pod Keep Alive for all BLE pods
+                            let defaultPKA = defaultPodKeepAliveValue(podType: self.state.podType)
+                            if self.state.podKeepAlive == .disabled && defaultPKA != .disabled {
+                                self.log.debug("@@@ Setting default pod keep alive to %{public}@", String(describing: defaultPKA))
+                                self.podKeepAlive = defaultPKA
                             }
 
                             self.pumpDelegate.notify { (delegate) in
@@ -1622,13 +1811,21 @@ extension OmniPumpManager {
             status = nil
         } else {
             status = try? session.getStatus(noSeqGetStatus: true)
+            if status == nil {
+                // Had some comms error or perhaps a pod fault. Evaluate pod's
+                // status in case it has change to trigger updates to clients.
+                evaluateStatus()
+            }
         }
 
         // Silence any pending acknowledged alerts
         silenceAcknowledgedAlerts()
 
-        // If we have new status, store the dosesForStorage which updates lastPumpDataReportDate
-        if status != nil {
+        // If we have a status return or if the pod is currently faulted, store dosesForStorage — updates
+        // lastPumpDataReportDate and saves any updated doses to the client, including the in-progress
+        // bolus finalized by handlePodFault on a fault (upstream loopandlearn #99; supersedes our earlier
+        // didReadStatus flush for the incomplete-dose-on-fault case).
+        if status != nil || state.podState?.isFaulted == true {
             session.dosesForStorage() { (doses) -> Bool in
                 return store(doses: doses, in: session)
             }
@@ -1656,7 +1853,8 @@ extension OmniPumpManager {
 
         // Don't use guard state.hasActivePod here as it prevents getPodStatus from working
         // after the pod has been paired, but before the pod setup process has been completed.
-        guard state.podState?.setupProgress.isPaired == true, state.podState?.fault == nil else {
+        // Instead just verify that the pod is at least paired and not faulted.
+        guard hasPairedNonFaultedPod else {
             completion?(.failure(PumpManagerError.configuration(OmniPumpManagerError.noPodPaired)))
             return
         }
@@ -1795,7 +1993,8 @@ extension OmniPumpManager {
         /// For now just disable this enforcement to match the previous behavior.
         //for entry in schedule.entries {
         //    guard entry.rate <= state.maxBasalRateUnitsPerHour else {
-        //        return .failure(PumpManagerError.configuration(OmniPumpManagerError.invalidSetting))
+        //        completion(PumpManagerError.configuration(OmniPumpManagerError.invalidSetting))
+        //        return
         //    }
         //}
 
@@ -2117,6 +2316,12 @@ extension OmniPumpManager {
             return nil // no in progress manual insulin delivery, no updates needed
         }
 
+        if noSilentBeep && !enabled {
+            /// Can't use the beepConfig command to silently change the completion beep
+            /// state on black dot O5 pods since noBeepNonCancel is non-silent on these pods.
+            return nil /// better to do punt instead of using a command that will beep
+        }
+
         let result = session.beepConfig(
             beepType: enabled ?  .bipBip : .noBeepNonCancel,
             tempBasalCompletionBeep: enabled && self.hasUnfinalizedManualTempBasal,
@@ -2188,32 +2393,51 @@ extension OmniPumpManager {
                                  silencePodEnd: Date?,
                                  completion: @escaping (OmniPumpManagerError?) -> Void)
     {
-        guard let configuredAlerts = self.state.podState?.configuredAlerts,
-              let activeAlertSlots = self.state.podState?.activeAlertSlots,
-              let reservoirLevel = self.state.podState?.lastInsulinMeasurements?.reservoirLevel?.rawValue else
+        guard let configuredAlerts = state.podState?.configuredAlerts,
+              let activeAlertSlots = state.podState?.activeAlertSlots,
+              let reservoirLevel = state.podState?.lastInsulinMeasurements?.reservoirLevel?.rawValue else
         {
-            self.log.error("Missing pod state!") // should never happen
+            log.error("Missing pod state!") // should never happen
             completion(OmniPumpManagerError.noPodPaired)
             return
         }
 
         let beepBlock: MessageBlock?
-        if !self.beepPreference.shouldBeepForManualCommand {
-            // No enabled completion beeps to worry about for any in-progress manual delivery
-            beepBlock = nil
-        } else if silencePod {
-            // Disable completion beeps for any in-progress manual delivery w/o beeping
-            beepBlock = BeepConfigCommand(beepType: .noBeepNonCancel)
+        if silencePod {
+            /// Would like to try to disable completion beeps for any in-progress manual delivery w/o any beeping
+            if noSilentBeep {
+                /// Argh, .noBeepNonCancel is not silent for black dot O5 pods!
+                /// Need to punt on trying to adjusting any in-progress manual delivery
+                /// beep state or we'd incorrectly beep trying to update these values.
+                beepBlock = nil
+            } else {
+                /// Disable completion beeps for any in-progress manual delivery w/o beeping
+                beepBlock = BeepConfigCommand(beepType: .noBeepNonCancel)
+            }
         } else {
-            // Emit a confirmation beep and enable completion beeps for any in-progress manual delivery
-            beepBlock = BeepConfigCommand(
-                beepType: .bipBip,
-                tempBasalCompletionBeep: self.hasUnfinalizedManualTempBasal,
-                bolusCompletionBeep: self.hasUnfinalizedManualBolus
-            )
+            /// Switching out of silencePod mode, beeping behavior is now governed
+            /// by the current beepPreference.shouldBeepForManualCommand value.
+            let enabled = beepPreference.shouldBeepForManualCommand
+            if noSilentBeep && !enabled {
+                /// Argh, .noBeepNonCancel is not silent for black dot O5 pods!
+                /// Need to punt on trying to adjusting any in-progress manual delivery
+                /// beep state or we'd incorrectly beep trying to update these values.
+                beepBlock = nil
+            } else {
+                /// Create a properly configured beepBlock that will optionally provide any needed command
+                /// beeping as well as to enable/disable completion beeping for any in-progress manual delivery.
+                beepBlock = BeepConfigCommand(
+                    beepType: enabled ? .bipBip : .noBeepNonCancel,
+                    tempBasalCompletionBeep: enabled && hasUnfinalizedManualTempBasal,
+                    bolusCompletionBeep: enabled && hasUnfinalizedManualBolus
+                )
+            }
         }
 
-        let podAlerts = regeneratePodAlerts(silent: silencePod, configuredAlerts: configuredAlerts, activeAlertSlots: activeAlertSlots, currentPodTime: self.podTime, currentReservoirLevel: reservoirLevel)
+        /// Don't actually use silent pod alerts on "black dot" pods as they will emit a bipBip instead of being silent
+        let silentAlerts = silencePod && state.podState?.noSilentBeep == false
+
+        let podAlerts = regeneratePodAlerts(silent: silentAlerts, configuredAlerts: configuredAlerts, activeAlertSlots: activeAlertSlots, currentPodTime: podTime, currentReservoirLevel: reservoirLevel)
 
         do {
             // Since non-responsive pod comms are currently only resolved for insulin related commands,
@@ -2221,31 +2445,27 @@ extension OmniPumpManager {
             // and thus the alert won't get reset here when reconfiguring pod alerts with a new silence pod state.
             let acknowledgeAll = true   // protect against lost alert configuration response related issues
             try session.configureAlerts(podAlerts, acknowledgeAll: acknowledgeAll, beepBlock: beepBlock)
-            self.setState { (state) in
+            setState { (state) in
                 state.silencePod = silencePod
                 state.silencePodEnd = silencePodEnd
             }
-            /// If beepPreference is currently set to beep for manual commands, update the internal pod beep completion
-            /// state for any in progress manual insulin delivery based on the value of the new Silence Pod state just set.
-            if self.beepPreference.shouldBeepForManualCommand {
-                _ = updateManualInsulinBeepState(session: session, enabled: !silencePod)
-            }
             completion(nil)
         } catch {
-            self.log.error("Configure alerts %{public}@ failed: %{public}@", String(describing: podAlerts), String(describing: error))
+            log.error("Configure alerts %{public}@ failed: %{public}@", String(describing: podAlerts), String(describing: error))
             completion(.communication(error))
         }
     }
 
-    // Running on any iPhone 16 or an iPhone 17e which are known
-    // to have BLE reconnect issues with InPlay BLE DASH pods?
-    var iPhoneWithPossibleInPlayIssues: Bool {
-
-        let iPhoneModel = UIDevice.modelName
-        if iPhoneModel.contains("iPhone 16") || iPhoneModel == "iPhone 17e" {
-            return true
+    // A host asked the pump to provide the BLE heartbeat on a combination needing the eager-connect
+    // mitigation, while a Pod Keep Alive mode holds the pod connected in the background. The usual
+    // StartDelay probe can't be used there, so wakes are driven by link drops instead
+    // (see BluetoothManager.isEagerHeartbeatMode) — workable, but less regular.
+    var bleHeartbeatDegradedForThisPod: Bool {
+        guard usingInPlayPod == true, UIDevice.hasPossibleInPlayBLEIssues,
+              state.podKeepAlive.keepsPodConnectedInBackground else { return false }
+        if let blePodComms = podComms as? BlePodComms {
+            return blePodComms.isBLEHeartbeatRequested
         }
-
         return false
     }
 
@@ -2253,7 +2473,7 @@ extension OmniPumpManager {
     var usingInPlayPod: Bool? {
 
         if let blePodComms = podComms as? BlePodComms, let deviceBLEName = blePodComms.manager?.peripheral.name {
-            return deviceBLEName == "InPlay BLE"
+            return deviceBLEName == BluetoothManager.inPlayPeripheralName
         }
         return nil // don't know -- maybe not paired yet
     }
@@ -2551,7 +2771,7 @@ extension OmniPumpManager: PumpManager {
             return state.isPumpDataStale
         }
 
-        if state.podType.usesRileyLink {
+        if state.podType.isEros || state.podKeepAlive == .rileyLink {
             checkRileyLinkBattery()
         }
 
@@ -2572,13 +2792,10 @@ extension OmniPumpManager: PumpManager {
         }
     }
 
-    // RL only
     private func checkRileyLinkBattery() {
-        if state.podType.usesRileyLink {
-            rileyLinkDeviceProvider.getDevices { devices in
-                for device in devices {
-                    device.updateBatteryLevel()
-                }
+        rileyLinkDeviceProvider.getDevices { devices in
+            for device in devices {
+                device.updateBatteryLevel()
             }
         }
     }
@@ -2740,9 +2957,13 @@ extension OmniPumpManager: PumpManager {
     }
 
     public func enactTempBasal(unitsPerHour: Double, for duration: TimeInterval, automatic: Bool, completion: @escaping (PumpManagerError?) -> Void) {
-        guard unitsPerHour <= state.maxBasalRateUnitsPerHour else {
-            completion(.configuration(OmniPumpManagerError.invalidSetting))
-            return
+        if unitsPerHour > state.maxBasalRateUnitsPerHour {
+            /// The app is trying to set a TBR above the configured max basal. This can happen if the
+            /// app isn't properly sync'ing its max basal rate to the Pump Manager. Rather than returning
+            /// an invalidSetting error that could stop looping, log and continue (loopandlearn #85
+            /// workaround for mismatched basal limits).
+            log.error("@@@ runTemporaryBasalProgram requested unitsPerHour %{public}@ exceeds configured maxBasal of %{public}@!",
+                      String(describing: unitsPerHour), String(describing: state.maxBasalRateUnitsPerHour))
         }
 
         guard self.hasActivePod, let podState = self.state.podState else {
@@ -2907,10 +3128,13 @@ extension OmniPumpManager: PumpManager {
             if let maxBasalRate = deliveryLimits.maximumBasalRate?.doubleValue(for: .internationalUnitsPerHour),
                let maxBolus = deliveryLimits.maximumBolus?.doubleValue(for: .internationalUnit())
             {
+                log.debug("@@@ syncDeliveryLimits setting maxBasalRate to %{public}@ and maxBolus to %{public}@",
+                          String(describing: maxBasalRate), String(describing: maxBolus))
                 state.maxBasalRateUnitsPerHour = maxBasalRate
                 state.maxBolusUnits = maxBolus
                 completion(.success(deliveryLimits))
             } else {
+                log.error("@@@ syncDeliveryLimits failed with deliveryLimits of %{public}@", String(describing: deliveryLimits))
                 completion(.failure(OmniPumpManagerError.invalidSetting))
             }
         }
@@ -3122,6 +3346,10 @@ extension OmniPumpManager: PumpManager {
         for alert in removed {
             log.default("Alert slot cleared: %{public}@", String(describing: alert))
         }
+        // Re-wake quieting: once all pod alerts have cleared, let the connectionless alarm scan resume.
+        if newAlerts.isEmpty {
+            (podComms as? BlePodComms)?.resumeAlarmScanAfterAlertsCleared()
+        }
     }
 
     private func getPumpManagerAlert(for podAlert: PodAlert, slot: AlertSlot) -> PumpManagerAlert? {
@@ -3154,6 +3382,10 @@ extension OmniPumpManager: PumpManager {
                 self.runSession(withName: "Silence already acknowledged alert") { (result) in
                     switch result {
                     case .success(let session):
+                        // Another queued session may have cleared it already
+                        guard self.state.alertsWithPendingAcknowledgment.contains(alert) else {
+                            return
+                        }
                         do {
                             let _ = try session.acknowledgeAlerts(alerts: AlertSet(slots: [slot]))
                         } catch {
@@ -3190,7 +3422,7 @@ extension OmniPumpManager: PumpManager {
     func store(doses: [UnfinalizedDose], in session: PodCommsSession) -> Bool {
         session.assertOnSessionQueue()
 
-        // We block the session until the data's confirmed stored by the delegate
+        // We block the session until the data's confirmed stored by the delegate.
         let semaphore = DispatchSemaphore(value: 0)
         var success = false
 
@@ -3199,7 +3431,18 @@ extension OmniPumpManager: PumpManager {
             semaphore.signal()
         }
 
-        semaphore.wait()
+        // Bounded wait to guarantee liveness. The completion is dispatched to the delegate queue (Loop's
+        // is .main), while this runs on the pod command queue HOLDING podStateLock (BlePodComms.bleRunSession).
+        // If the main thread is itself blocked acquiring podStateLock — e.g. a concurrent forgetPod /
+        // handleDiscardedPodDosing during pod deactivation — an untimed wait() deadlocks the command queue
+        // forever (observed: deactivating a faulted pod hung ~10 min until force-kill). On timeout, bail and
+        // return false so dosesForStorage RETAINS the doses for a later flush (re-storing is idempotent —
+        // DoseStore dedupes by syncIdentifier). Returning unwinds the session and releases podStateLock,
+        // breaking the deadlock. Legitimate stores complete in well under a second.
+        if semaphore.wait(timeout: .now() + .seconds(10)) == .timedOut {
+            self.log.error("store(doses:) timed out waiting for delegate confirmation — retaining %d dose(s) for retry (avoids podStateLock deadlock)", doses.count)
+            return false
+        }
 
         if success {
             setState { (state) in
@@ -3345,30 +3588,38 @@ extension OmniPumpManager {
                         return
                     }
 
+                    // Loop records the acknowledgement as soon as it is tapped. Persist it here too, before
+                    // the session runs, so that if the app dies while waiting on the pod the next status
+                    // update still clears the pod alert (see silenceAcknowledgedAlerts).
+                    self.setState { state in
+                        state.alertsWithPendingAcknowledgment.insert(alert)
+                    }
+
                     // Acknowledge the pod alert for the triggering slot
                     self.runSession(withName: "Acknowledge Alert") { (result) in
                         switch result {
                         case .success(let session):
                             self.handleSilencePodEnd(session: session)
 
+                            // A retry from silenceAcknowledgedAlerts may have cleared it already
+                            guard self.state.alertsWithPendingAcknowledgment.contains(alert) else {
+                                completion(nil)
+                                return
+                            }
+
                             do {
                                 let beepBlock = self.beepMessageBlock(beepType: .beep)
                                 let _ = try session.acknowledgeAlerts(alerts: AlertSet(slots: [slot]), beepBlock: beepBlock)
                             } catch {
-                                self.setState { state in
-                                    state.alertsWithPendingAcknowledgment.insert(alert)
-                                }
                                 completion(error)
                                 return
                             }
                             self.setState { state in
                                 state.activeAlerts.remove(alert)
+                                state.alertsWithPendingAcknowledgment.remove(alert)
                             }
                             completion(nil)
                         case .failure(let error):
-                            self.setState { state in
-                                state.alertsWithPendingAcknowledgment.insert(alert)
-                            }
                             completion(error)
                         }
                     }

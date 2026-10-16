@@ -82,7 +82,9 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
 
     var podType: PodType
 
-    // Eros only state
+    // Only settable for BLE pod types
+    var podKeepAlive: PodKeepAlive
+
     var rileyLinkConnectionManagerState: RileyLinkConnectionState? = nil
     var pairingAttemptAddress: UInt32? = nil
     var rileyLinkBatteryAlertLevel: Int? = nil
@@ -121,7 +123,8 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
         maxBolusUnits: Double,
         insulinType: InsulinType?,
         podType: PodType,
-        rileyLinkConnectionManagerState: RileyLinkConnectionState? = nil, // Eros
+        podKeepAlive: PodKeepAlive,
+        rileyLinkConnectionManagerState: RileyLinkConnectionState? = nil, /// Eros or PodKeepAlive RileyLink option
         controllerId: UInt32? = nil, // BLE
         podId: UInt32? = nil) // BLE
     {
@@ -144,9 +147,11 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
         self.alertsWithPendingAcknowledgment = []
 
         self.podType = podType
+        self.podKeepAlive = podKeepAlive
 
-        if podType.usesRileyLink {
-            self.rileyLinkConnectionManagerState = rileyLinkConnectionManagerState
+        self.rileyLinkConnectionManagerState = rileyLinkConnectionManagerState
+
+        if podType.isEros {
             self.controllerId = 0
             self.podId = 0
         } else if let controllerId = controllerId, let podId = podId {
@@ -185,9 +190,10 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
                       String(describing: podState.podType))
             podType = podState.podType
         } else if rawValue["controllerId"] != nil {
-            log.error("[OmniPumpManagerState] init with rawValue has no podType, assuming dashType")
+            log.info("[OmniPumpManagerState] init with rawValue has no podType, using dashType")
             podType = dashType // OmniBLE
         } else {
+            log.info("[OmniPumpManagerState] init with rawValue has no podType and no controllerId, using erosType")
             podType = erosType // OmniKit
         }
 
@@ -212,26 +218,30 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
             insulinType = InsulinType(rawValue: rawInsulinType)
         }
 
+        /// OmniKit/OmniBLE had a maximumTempBasalRate variable, but it was advertised to the user as a max basal rate.
+        /// OmnipodKit renamed this to a more appropriate maxBasalRateUnitsPerHour, even though OmnipodKit isn't currently
+        /// enforcing this for scheduled basal rates as Trio doesn't enforce this in its UI leading to confusing failures
+        /// with an out of range value during operations like saving a basal schedule, resuming, setting pump time, etc.
+        /// OmnipodKit is now also not enforcing this limit for temp basals rates to prevent various issues in Trio
+        /// when its Maximum Basal Rate value isn't properly sync'ed with the OmniPumpManagerState values.
         let maxBasalRateUnitsPerHour = rawValue["maxBasalRateUnitsPerHour"] as? Double ??
                                         rawValue["maximumTempBasalRate"] as? Double ?? Pod.maximumBasalUnitsPerHour
 
+        /// OmniKit/OmniBLE didn't had a maxBolusUnits state variable.  Default to the allowed maximum
+        /// bolus value if not present to match previous OmniKit/OmniBLE behavior that relies on the app
+        /// to do the only enforcement of the Therapy Setting bolus limit as was done in OmniKit/OmniBLE.
         let maxBolusUnits = rawValue["maxBolusUnits"] as? Double ?? Pod.maximumBolusUnits
 
         // Omnipod model specific values
-        let rileyLinkConnectionManagerState: RileyLinkConnectionState?
         var controllerId, podId: UInt32?
-        if podType.usesRileyLink {
-            if let rileyLinkConnectionManagerStateRaw = rawValue["rileyLinkConnectionManagerState"] as? RileyLinkConnectionState.RawValue {
-                rileyLinkConnectionManagerState = RileyLinkConnectionState(rawValue: rileyLinkConnectionManagerStateRaw)
-            } else {
-                rileyLinkConnectionManagerState = RileyLinkConnectionState(autoConnectIDs: [])
-            }
+        if podType.isEros {
             controllerId = nil
             podId = nil
         } else {
-            rileyLinkConnectionManagerState = nil
+            // DASH or O5
             controllerId = rawValue["controllerId"] as? UInt32? ?? nil
             podId = rawValue["podId"] as? UInt32? ?? nil
+
             /// O5 specific checks of controllerId with the O5CertificateStore
             if podType.isO5, let myId = controllerId, myId != 0 {
                 // Verify that the O5CertificateStore contains info for myId
@@ -256,6 +266,25 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
             }
         }
 
+        let podKeepAlive: PodKeepAlive
+        let defaultPKA = defaultPodKeepAliveValue(podType: podType)
+        if let rawPodKeepAlive = rawValue["podKeepAlive"] as? PodKeepAlive.RawValue {
+            podKeepAlive = PodKeepAlive(rawValue: rawPodKeepAlive) ?? defaultPKA
+        } else {
+            podKeepAlive = defaultPKA
+        }
+
+        let rileyLinkConnectionManagerState: RileyLinkConnectionState?
+        if podType.isEros || podKeepAlive == .rileyLink {
+            if let rileyLinkConnectionManagerStateRaw = rawValue["rileyLinkConnectionManagerState"] as? RileyLinkConnectionState.RawValue {
+                rileyLinkConnectionManagerState = RileyLinkConnectionState(rawValue: rileyLinkConnectionManagerStateRaw)
+            } else {
+                rileyLinkConnectionManagerState = RileyLinkConnectionState(autoConnectIDs: [])
+            }
+        } else {
+            rileyLinkConnectionManagerState = nil
+        }
+
         self.init(
             isOnboarded: isOnboarded,
             podState: podState,
@@ -265,9 +294,10 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
             maxBolusUnits: maxBolusUnits,
             insulinType: insulinType ?? .novolog,
             podType: podType,
-            rileyLinkConnectionManagerState: rileyLinkConnectionManagerState, // Eros only
-            controllerId: controllerId, // non-Eros only
-            podId: podId // non-Eros only
+            podKeepAlive: podKeepAlive,
+            rileyLinkConnectionManagerState: rileyLinkConnectionManagerState,
+            controllerId: controllerId,
+            podId: podId
         )
 
         if let rawUnstoredDoses = rawValue["unstoredDoses"] as? [UnfinalizedDose.RawValue] {
@@ -364,6 +394,7 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
         ]
 
         value["podType"] = podType.rawValue
+        value["podKeepAlive"] = podKeepAlive.rawValue
         value["insulinType"] = insulinType?.rawValue
         value["podState"] = podState?.rawValue
         value["rileyLinkConnectionManagerState"] = rileyLinkConnectionManagerState?.rawValue
@@ -386,6 +417,10 @@ extension OmniPumpManagerState {
 
     var hasSetupPod: Bool {
         return podState?.isSetupComplete == true
+    }
+
+    var hasPairedNonFaultedPod: Bool {
+        return podState?.setupProgress.isPaired == true && podState?.isFaulted == false
     }
 
     var isPumpDataStale: Bool {
@@ -424,15 +459,19 @@ extension OmniPumpManagerState: CustomDebugStringConvertible {
             "* acknowledgedTimeOffsetAlert: \(acknowledgedTimeOffsetAlert)",
             "* initialConfigurationCompleted: \(initialConfigurationCompleted)",
             "* podType: \(podType)",
+            "* podKeepAlive: \(podKeepAlive)",
             "",
         ].joined(separator: "\n")
-        if podType.usesRileyLink {
+        if podType.isEros || podKeepAlive == .rileyLink {
             retVal += [
-                "* pairingAttemptAddress: \(optionalString(pairingAttemptAddress))",
                 "* rileyLinkBatteryAlertLevel: \(optionalString(rileyLinkBatteryAlertLevel))",
                 "* lastRileyLinkBatteryAlertDate \(optionalString(lastRileyLinkBatteryAlertDate))",
                 "* rileyLinkConnectionManagerState: \(optionalString(rileyLinkConnectionManagerState))",
+                ""
             ].joined(separator: "\n")
+        }
+        if podType.isEros {
+            retVal += "* pairingAttemptAddress: \(optionalString(pairingAttemptAddress))"
         } else {
             retVal += [
                 "* controllerId: \(String(format: "%08X", controllerId))",

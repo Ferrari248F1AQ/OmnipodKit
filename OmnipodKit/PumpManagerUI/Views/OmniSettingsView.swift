@@ -18,9 +18,11 @@ struct OmniSettingsView: View  {
     
     @ObservedObject var viewModel: OmniSettingsViewModel
 
-    @ObservedObject var rileyLinkListDataSource: RileyLinkListDataSource // Eros only
+    @ObservedObject var rileyLinkListDataSource: RileyLinkListDataSource
 
-    var handleRileyLinkSelection: (RileyLinkDevice) -> Void // Eros only
+    var handleRileyLinkSelection: (RileyLinkDevice) -> Void
+
+    @State private var o5CertLoaded = false
 
     @State private var showingDeleteConfirmation = false
 
@@ -287,7 +289,15 @@ struct OmniSettingsView: View  {
                             .padding(.top,5)
                     }
                     .buttonStyle(PlainButtonStyle())
-                    .disabled(!viewModel.hasConnection || sendingTestBeepsCommand)
+                    // Not gated on hasConnection. That var means different things by pod type — the
+                    // pod link for BLE pods, whether ANY RileyLink is connected (independent of pod
+                    // availability) for Eros; see OmniPumpManager.hasConnection. In neither case does
+                    // "not connected right now" mean the command can't run: playTestBeeps goes through
+                    // the normal command path, which acquires the link itself. The icon still greys out
+                    // to show there is no live link, but the button stays tappable, so a beep can be
+                    // used to check whether the pod is actually reachable. Every other action on this
+                    // screen gates on podOk rather than on connectivity.
+                    .disabled(sendingTestBeepsCommand)
 
                     headerImage
 
@@ -316,6 +326,48 @@ struct OmniSettingsView: View  {
                 }
             }
 
+            // Persistent advisory for InPlay-variant pods on affected iPhone models (iPhone 16
+            // family / iPhone 17e): connection establishment can stall and is retried
+            // automatically, so slower-than-normal connects are expected. Tap for details.
+            if viewModel.connectionSlownessExpected {
+                Section {
+                    NavigationLink(destination: InPlayConnectionInfoView()) {
+                        HStack(spacing: 10) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundColor(.orange)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(LocalizedString("Slower Connections Expected", comment: "Title of InPlay connection notice row"))
+                                    .font(Font.subheadline.weight(.semibold))
+                                Text(LocalizedString("This pod and phone combination can be slow to connect.", comment: "Subtitle of InPlay connection notice row"))
+                                    .font(.footnote)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Advisory: a host requested pump-provided background heartbeats. On these combos the
+            // normal (StartDelay) heartbeat probe can't be used, so wakes come from link drops
+            // instead — workable, but less regular than on unaffected pods.
+            if viewModel.bleHeartbeatDegraded {
+                Section {
+                    NavigationLink(destination: InPlayConnectionInfoView()) {
+                        HStack(spacing: 10) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundColor(.orange)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(LocalizedString("Reduced Background Wake-Ups", comment: "Title of BLE heartbeat degraded notice row"))
+                                    .font(Font.subheadline.weight(.semibold))
+                                Text(LocalizedString("Background wake-ups from the pod are less frequent on this pod and phone combination.", comment: "Subtitle of BLE heartbeat degraded notice row"))
+                                    .font(.footnote)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+
             let lifeState = self.viewModel.lifeState
             Section(header: SectionHeader(label: LocalizedString("Actions", comment: "Section header for Actions section"))) {
                 // If need to pair a pod, display this as the only action
@@ -324,6 +376,17 @@ struct OmniSettingsView: View  {
                         Button(action: {
                             if self.viewModel.podType == unknownOmnipodType {
                                 self.viewModel.navigateTo?(.selectPodType)
+                            } else if self.viewModel.podType.isO5 &&
+                                !O5CertificateStore.contains(self.viewModel.controllerId)
+                            {
+                                if O5CertificateStore.isEmpty {
+                                    // No longer have any O5 Certificates,
+                                    // navigate to O5 Setup to download one.
+                                    self.viewModel.navigateTo?(.o5KeySetup)
+                                } else {
+                                    // Simply refresh to pick up another certificate
+                                    self.viewModel.refreshO5IdsFromCertStore()
+                                }
                             } else {
                                 self.viewModel.navigateTo?(.pairAndPrime)
                             }
@@ -386,9 +449,9 @@ struct OmniSettingsView: View  {
                 }
             }
 
-            if self.viewModel.podType.usesRileyLink {
+            if self.viewModel.podType.isEros {
                 Section(header: HStack {
-                    FrameworkLocalText("Devices", comment: "Header for devices section of RileyLinkSetupView")
+                    FrameworkLocalText("Devices", comment: "Header for devices section of OmniSettingsView")
                     Spacer()
                     ProgressView()
                 }) {
@@ -397,7 +460,6 @@ struct OmniSettingsView: View  {
                             HStack {
                                 Text(device.name ?? "Unknown")
                                 Spacer()
-
                                 if rileyLinkListDataSource.autoconnectBinding(for: device).wrappedValue {
                                     if device.isConnected {
                                         Text(formatRSSI(rssi:device.rssi)).foregroundColor(.secondary)
@@ -415,8 +477,6 @@ struct OmniSettingsView: View  {
                         }
                     }
                 }
-                .onAppear { rileyLinkListDataSource.isScanningEnabled = true }
-                .onDisappear { rileyLinkListDataSource.isScanningEnabled = false }
             }
 
             Section() {
@@ -529,7 +589,8 @@ struct OmniSettingsView: View  {
 
                 NavigationLink(destination: SilencePodSelectionView(initialValue: viewModel.silencePodPreference,
                                                                     initialSilenceTimeEndTime: viewModel.silencePodEnd,
-                                                                    onSave: viewModel.setSilencePod))
+                                                                    onSave: viewModel.setSilencePod,
+                                                                    noSilentBeep: viewModel.noSilentBeep))
                 {
                     HStack {
                         /// If we have a silence pod end time, use an alternate row title and display this time.
@@ -621,8 +682,18 @@ struct OmniSettingsView: View  {
                 }
             }
 
-            if self.viewModel.podType.isDash {
-                Section() {
+            Section() {
+                let localizedPodDiagnosticsStr = LocalizedString("Pod Diagnostics", comment: "Title for the Pod Diagnostic row and page")
+                NavigationLink(destination: PodDiagnosticsView(
+                    title: localizedPodDiagnosticsStr,
+                    diagnosticCommands: viewModel.diagnosticCommands,
+                    podOk: viewModel.podOk,
+                    noPod: viewModel.noPod))
+                {
+                    Text(localizedPodDiagnosticsStr)
+                        .foregroundColor(Color.primary)
+                }
+                if !self.viewModel.podType.isEros {
                     let localizedPodKeepAliveStr = LocalizedString("Pod Keep Alive",
                         comment: "Title for the pod keep alive row and page")
                     NavigationLink(destination: PodKeepAliveView(title: localizedPodKeepAliveStr,
@@ -637,19 +708,48 @@ struct OmniSettingsView: View  {
                                 .foregroundColor(Color.secondary)
                         }
                     }
+
+                    if viewModel.podKeepAlivePreference == .rileyLink {
+                        ForEach(rileyLinkListDataSource.devices, id: \.peripheralIdentifier) { device in
+                            Toggle(isOn: rileyLinkListDataSource.autoconnectBinding(for: device)) {
+                                HStack {
+                                    Text(device.name ?? "Unknown")
+                                    Spacer()
+                                    if rileyLinkListDataSource.autoconnectBinding(for: device).wrappedValue {
+                                        if device.isConnected {
+                                            Text(formatRSSI(rssi: device.rssi))
+                                                .foregroundColor(.secondary)
+                                        } else {
+                                            Image(systemName: "wifi.exclamationmark")
+                                                .imageScale(.large)
+                                                .foregroundColor(guidanceColors.warning)
+                                        }
+                                    }
+                                }
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    handleRileyLinkSelection(device)
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
             Section() {
-                let localizedPodDiagnosticsStr = LocalizedString("Pod Diagnostics", comment: "Title for the Pod Diagnostic row and page")
-                NavigationLink(destination: PodDiagnosticsView(
-                    title: localizedPodDiagnosticsStr,
-                    diagnosticCommands: viewModel.diagnosticCommands,
-                    podOk: viewModel.podOk,
-                    noPod: viewModel.noPod))
+                NavigationLink(destination: Omnipod5SupportView(
+                    podType: viewModel.podType,
+                    controllerId: viewModel.controllerId,
+                    hasActivePod: !viewModel.noPod,
+                    refreshO5IdsFromCertStore: viewModel.refreshO5IdsFromCertStore,
+                    onCertStoreChanged: { o5CertLoaded = !O5RegistrationData.isEmpty }))
                 {
-                    Text(localizedPodDiagnosticsStr)
-                        .foregroundColor(Color.primary)
+                    HStack(spacing: 12) {
+                        Image(systemName: o5CertLoaded ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                            .foregroundColor(o5CertLoaded ? .green : guidanceColors.warning)
+                        FrameworkLocalText("Omnipod 5 Support", comment: "Text for Omnipod 5 Support navigation link in OmniSettingsView")
+                            .foregroundColor(Color.primary)
+                    }
                 }
             }
 
@@ -672,10 +772,25 @@ struct OmniSettingsView: View  {
                 }
             }
         }
+        .onAppear {
+            rileyLinkListDataSource.isScanningEnabled = (viewModel.podType.isEros || viewModel.podKeepAlivePreference == .rileyLink)
+        }
+        .onDisappear {
+            rileyLinkListDataSource.isScanningEnabled = false
+        }
+        .onChange(of: viewModel.podKeepAlivePreference) { oldValue, newValue in
+            rileyLinkListDataSource.isScanningEnabled = (newValue == .rileyLink)
+        }
         .alert(isPresented: $viewModel.alertIsPresented, content: { alert(for: viewModel.activeAlert!) })
         .insetGroupedListStyle()
         .navigationBarItems(trailing: doneButton)
         .navigationBarTitle(self.viewModel.viewTitle)
+        .task {
+            // Ensure both built-in (dlsym) and Keychain-persisted certs are restored
+            // before reading the registry, then seed the status badge.
+            _ = O5CertificateStore.isEmpty
+            o5CertLoaded = !O5RegistrationData.isEmpty
+        }
     }
 
     var syncPumpTimeActionSheet: ActionSheet {

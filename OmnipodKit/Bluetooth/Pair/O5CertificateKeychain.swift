@@ -32,6 +32,7 @@ enum O5CertificateKeychain {
         case unhandled(OSStatus)
     }
 
+    /// One persisted entry: registration data plus the source that originally produced it.
     struct Entry {
         let data: O5RegistrationData
         let source: O5RegistrationSource
@@ -124,6 +125,8 @@ enum O5CertificateKeychain {
         return status == errSecSuccess
     }
 
+    /// Loads every persisted certificate into the in-memory `O5RegistrationData` registry.
+    /// Idempotent and cheap to call — the actual Keychain read happens at most once per process.
     static func restoreIntoRegistry() {
         restoreLock.lock()
         defer { restoreLock.unlock() }
