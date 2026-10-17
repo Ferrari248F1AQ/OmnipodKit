@@ -1650,7 +1650,7 @@ extension OmniPumpManager {
     // MARK: - Pairing
 
     // Called on the main thread
-    func pairAndPrime(therapyConfig: O5TherapyConfig? = nil, completion: @escaping (PumpManagerResult<TimeInterval>) -> Void) {
+    func pairAndPrime(completion: @escaping (PumpManagerResult<TimeInterval>) -> Void) {
 
         guard state.podType != unknownOmnipodType else {
             completion(.failure(.configuration(OmniPumpManagerError.podTypeNotConfigured)))
@@ -1746,15 +1746,9 @@ extension OmniPumpManager {
 
         // Common code that invokes blePairAndSetupPod and then a primingSession if successful
         func blePairSetupPrimePod(blePodComms: BlePodComms) {
-            // Pass CGM sensor config to BlePodComms for O5 registration
-            blePodComms.o5CgmSensorConfig = self.o5CgmSensorConfig
-            blePodComms.blePairAndSetupPod(timeZone: .currentFixed, insulinType: insulinType, therapyConfig: therapyConfig, messageLogger: self) { (result) in
+            blePodComms.blePairAndSetupPod(timeZone: .currentFixed, insulinType: insulinType, messageLogger: self) { (result) in
                 switch result {
                 case .success:
-                    if let cgmConfig = self.o5CgmSensorConfig {
-                        self.o5NudgeController.isCgmSensorRegistered = true
-                        self.o5NudgeController.registeredSensorType = cgmConfig.sensorType
-                    }
                     primeSession(result)
                 case .failure(let error):
                     self.log.error("blePairAndSetupAndPrimePod failed with %{public}@", String(describing: error))

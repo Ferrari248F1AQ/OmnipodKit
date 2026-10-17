@@ -30,9 +30,6 @@ class BlePodComms: PodComms {
 
     private var needsSessionEstablishment: Bool = false
 
-    /// CGM sensor config for O5 pod registration. Set before calling blePairAndSetupPod.
-    var o5CgmSensorConfig: O5CgmSensorConfig?
-
     private var bluetoothManager: BluetoothManager!
 
     /// Whether a host has asked the pump to provide the BLE heartbeat (see
@@ -350,10 +347,7 @@ class BlePodComms: PodComms {
 
     /// Handles executing the required O5 AID setup commands and updates the podState's transport state as needed.
     /// To be call for an O5 only after pairPod() sucessfully creates a podState and before setupPod() is called.
-    ///
-    /// - Parameter therapyConfig: Loop therapy settings converted to O5 AID parameters.
-    ///   Pass nil to use hardcoded defaults (110 mg/dL target, 4h DIA, 14U TDI).
-    private func handleO5Setup(therapyConfig: O5TherapyConfig? = nil) throws {
+    private func handleO5Setup() throws {
         // The AssignAddress command successfully run in pairPod() creates podState
         assert(podState != nil, "handleO5Setup() called with no podState")
 
@@ -373,27 +367,9 @@ class BlePodComms: PodComms {
         }
 
         // Perform the needed O5 AID setup commands
-        let config = therapyConfig ?? .default
-        log.info("@@@ Sending O5 AID setup commands (targets=%{public}@, DIA=%{public}d, TDI=%{public}dU)",
-                 String(describing: config.targetBgProfile.first ?? 110),
-                 config.diaHalfHours, config.tdiUnits)
-        try o5SendAidSetupCommands(transport: transport, therapyConfig: config)
+        log.info("@@@ Sending O5 AID setup commands")
+        try o5SendAidSetupCommands(transport: transport)
         log.info("@@@ O5 AID setup complete")
-
-        // Register CGM sensor with the pod if a config is provided
-        if let cgmConfig = o5CgmSensorConfig {
-            log.info("@@@ Registering CGM sensor (%{public}@) with O5 pod", cgmConfig.sensorType.displayName)
-            let cgmPairingManager = O5CgmPairingManager()
-            do {
-                try cgmPairingManager.registerSensor(config: cgmConfig, transport: transport)
-                log.info("@@@ CGM sensor registration complete")
-            } catch {
-                log.error("@@@ CGM sensor registration failed: %{public}@", String(describing: error))
-                // Non-fatal: pod can still work, CGM relay will be set up later via nudge
-            }
-        } else {
-            log.info("@@@ No CGM sensor config provided — CGM relay will be configured later")
-        }
 
         // The podState's bleMessageTransportState will be updated when the above defer block is executed.
     }
@@ -413,7 +389,7 @@ class BlePodComms: PodComms {
     ///   5. EgvCommand — S3.7=3670015,G3.7
     ///   6-8. AlgorithmInsulinHistoryCommand x3 — SE2.1=00a8[168 bytes zeros]
     ///   9. [not needed] AidPodStatusCommand — G3.11 (majorVersion less than 7), else UnifiedAidPodStatusCommand — G3.12
-    private func o5SendAidSetupCommands(transport: BlePodMessageTransport, therapyConfig: O5TherapyConfig) throws {
+    private func o5SendAidSetupCommands(transport: BlePodMessageTransport) throws {
 
         // Command 1: UTC time
         log.bleDebug("@@@ O5 AID [1/9]: UtcCommand — setting pod UTC time")
@@ -427,10 +403,10 @@ class BlePodComms: PodComms {
             throw error
         }
 
-        // Command 2: TDI (Therapy Delivery Information) — uses configured TDI value
-        log.bleDebug("@@@ O5 AID [2/9]: TdiCommand — setting TDI=%{public}dU", therapyConfig.tdiUnits)
+        // Command 2: TDI (Therapy Delivery Information)
+        log.bleDebug("@@@ O5 AID [2/9]: TdiCommand — setting therapy delivery info")
         do {
-            let (payload, prefix) = O5AidCommands.TdiCommand.payload(binaryData: therapyConfig.tdiBinaryPayload)
+            let (payload, prefix) = O5AidCommands.TdiCommand.payload()
             let response = try transport.sendO5AidCommand(payload, responsePrefix: prefix)
             let responseStr = String(data: response, encoding: .utf8) ?? response.hexadecimalString
             log.bleDebug("@@@ O5 AID [2/9]: TdiCommand response: %{public}@", responseStr)
@@ -439,10 +415,10 @@ class BlePodComms: PodComms {
             throw error
         }
 
-        // Command 3: Target BG Profile — 48 half-hour targets from Loop's glucoseTargetRangeSchedule
-        log.bleDebug("@@@ O5 AID [3/9]: TargetBgProfileCommand — setting 48 half-hour BG targets from therapy config")
+        // Command 3: Target BG Profile (48 half-hour targets, all 110 mg/dL)
+        log.bleDebug("@@@ O5 AID [3/9]: TargetBgProfileCommand — setting 48 half-hour BG targets (all 110 mg/dL)")
         do {
-            let (payload, prefix) = O5AidCommands.TargetBgProfileCommand.payload(targets: therapyConfig.targetBgProfile)
+            let (payload, prefix) = O5AidCommands.TargetBgProfileCommand.payload()
             let response = try transport.sendO5AidCommand(payload, responsePrefix: prefix)
             log.bleDebug("@@@ O5 AID [3/9]: TargetBgProfileCommand response: %{public}d bytes", response.count)
         } catch {
@@ -450,11 +426,10 @@ class BlePodComms: PodComms {
             throw error
         }
 
-        // Command 4: DIA (Duration of Insulin Action) — from Loop's insulin model settings
-        let diaValue = String(therapyConfig.diaHalfHours)
-        log.bleDebug("@@@ O5 AID [4/9]: DiaCommand — setting DIA=%{public}@ half-hours", diaValue)
+        // Command 4: DIA (Duration of Insulin Action)
+        log.bleDebug("@@@ O5 AID [4/9]: DiaCommand — setting DIA=8")
         do {
-            let (payload, prefix) = O5AidCommands.DiaCommand.payload(value: diaValue)
+            let (payload, prefix) = O5AidCommands.DiaCommand.payload()
             let response = try transport.sendO5AidCommand(payload, responsePrefix: prefix)
             let responseStr = String(data: response, encoding: .utf8) ?? response.hexadecimalString
             log.bleDebug("@@@ O5 AID [4/9]: DiaCommand response: %{public}@", responseStr)
@@ -475,14 +450,11 @@ class BlePodComms: PodComms {
             throw error
         }
 
-        // Commands 6-8: Algorithm Insulin History — from DoseStore if available, else zeros
+        // Commands 6-8: Algorithm Insulin History (3 batches of 24 zero records)
         for batch in 1...3 {
-            let batchIndex = batch - 1
-            let records: [Data]? = therapyConfig.insulinHistoryBatches?[safe: batchIndex]
-            log.bleDebug("@@@ O5 AID [%{public}d/9]: AlgorithmInsulinHistoryCommand batch %{public}d/3 (hasHistory=%{public}@)",
-                         batch + 5, batch, String(describing: records != nil))
+            log.bleDebug("@@@ O5 AID [%{public}d/9]: AlgorithmInsulinHistoryCommand batch %{public}d/3", batch + 5, batch)
             do {
-                let (payload, prefix) = O5AidCommands.AlgorithmInsulinHistoryCommand.payload(records: records)
+                let (payload, prefix) = O5AidCommands.AlgorithmInsulinHistoryCommand.payload()
                 let response = try transport.sendO5AidCommand(payload, responsePrefix: prefix)
                 let responseStr = String(data: response, encoding: .utf8) ?? response.hexadecimalString
                 log.bleDebug("@@@ O5 AID [%{public}d/9]: AlgorithmInsulinHistory batch %{public}d/3 response: %{public}@",
@@ -609,7 +581,6 @@ class BlePodComms: PodComms {
     func blePairAndSetupPod(
         timeZone: TimeZone,
         insulinType: InsulinType,
-        therapyConfig: O5TherapyConfig? = nil,
         messageLogger: MessageLogger?,
         _ block: @escaping (_ result: SessionRunResult) -> Void
     ) {
@@ -658,7 +629,7 @@ class BlePodComms: PodComms {
                 // after the AssignAddress command is run in pairPod()
                 // and before the SetupPod command is run in setupPod().
                 if podType.isO5 && podState!.setupProgress.isPaired == false {
-                    try handleO5Setup(therapyConfig: therapyConfig)
+                    try handleO5Setup()
                 }
 
                 if podState!.setupProgress.isPaired == false {

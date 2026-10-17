@@ -182,13 +182,8 @@ class PairPodViewModel: ObservableObject, Identifiable {
 
     var autoRetryAttempted: Bool
 
-    /// O5 therapy configuration built from Loop's current settings.
-    /// Set by OmniUICoordinator before pairing begins.
-    var therapyConfig: O5TherapyConfig?
-
-    init(podPairer: PodPairer, therapyConfig: O5TherapyConfig? = nil) {
+    init(podPairer: PodPairer) {
         self.podPairer = podPairer
-        self.therapyConfig = therapyConfig
         self.autoRetryAttempted = false
         // If resuming, don't wait for the button action
         if podPairer.podCommState == .activating {
@@ -204,7 +199,7 @@ class PairPodViewModel: ObservableObject, Identifiable {
            state = .priming(finishTime: nil)
         }
 
-        podPairer.pairAndPrimePod(therapyConfig: therapyConfig) { (status) in
+        podPairer.pairAndPrimePod { (status) in
             DispatchQueue.main.async {
                 switch status {
                 case .failure(let error):
@@ -318,7 +313,7 @@ enum OmniPairingError : LocalizedError {
 }
 
 protocol PodPairer {
-    func pairAndPrimePod(therapyConfig: O5TherapyConfig?, completion: @escaping (PumpManagerResult<TimeInterval>) -> Void)
+    func pairAndPrimePod(completion: @escaping (PumpManagerResult<TimeInterval>) -> Void)
     func discardPod(completion: @escaping (Bool) -> ())
     var podCommState: PodCommState { get }
     var podType: PodType { get }
@@ -327,7 +322,7 @@ protocol PodPairer {
 extension OmniPumpManager: PodPairer {
     func discardPod(completion: @escaping (Bool) -> ()) { }
 
-    func pairAndPrimePod(therapyConfig: O5TherapyConfig?, completion: @escaping (PumpManagerResult<TimeInterval>) -> Void) {
-        pairAndPrime(therapyConfig: therapyConfig, completion: completion)
+    func pairAndPrimePod(completion: @escaping (PumpManagerResult<TimeInterval>) -> Void) {
+        pairAndPrime(completion: completion)
     }
 }
