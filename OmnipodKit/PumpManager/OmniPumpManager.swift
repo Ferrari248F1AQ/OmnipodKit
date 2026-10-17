@@ -4131,6 +4131,12 @@ extension OmniPumpManager: O5NudgeDataSource {
         return doses
     }
 
+    func supplementalInsulinHistory(since: Date) -> [(timestamp: Date, units: Double)] {
+        return state.nightscoutInsulinHistory
+            .filter { $0.timestamp >= since }
+            .map { (timestamp: $0.timestamp, units: $0.units) }
+    }
+
     func glucoseHistoryForRegression(since: Date) -> [(mgdl: Int, date: Date)] {
         return state.glucoseHistoryForRegression
             .filter { $0.date >= since }
@@ -4188,9 +4194,16 @@ extension OmniPumpManager: O5NudgeDataSource {
                         state.carbHistoryForRegression.append(contentsOf: newCarbs)
                         state.carbHistoryForRegression.sort { $0.date < $1.date }
 
+                        // Store Nightscout insulin in dedicated buffer for TDI gap-filling
+                        let existingNsDates = Set(state.nightscoutInsulinHistory.map { $0.timestamp.timeIntervalSinceReferenceDate })
+                        let newInsulin = data.insulin.filter { !existingNsDates.contains($0.timestamp.timeIntervalSinceReferenceDate) }
+                        state.nightscoutInsulinHistory.append(contentsOf: newInsulin)
+                        state.nightscoutInsulinHistory.sort { $0.timestamp < $1.timestamp }
+
+                        // Also keep in recentInsulinHistory for local regression
                         let existingInsulinDates = Set(state.recentInsulinHistory.map { $0.timestamp.timeIntervalSinceReferenceDate })
-                        let newInsulin = data.insulin.filter { !existingInsulinDates.contains($0.timestamp.timeIntervalSinceReferenceDate) }
-                        state.recentInsulinHistory.append(contentsOf: newInsulin)
+                        let newInsulinForRegression = data.insulin.filter { !existingInsulinDates.contains($0.timestamp.timeIntervalSinceReferenceDate) }
+                        state.recentInsulinHistory.append(contentsOf: newInsulinForRegression)
                         state.recentInsulinHistory.sort { $0.timestamp < $1.timestamp }
 
                         // Trim to 14 days
@@ -4198,6 +4211,7 @@ extension OmniPumpManager: O5NudgeDataSource {
                         state.glucoseHistoryForRegression.removeAll { $0.date < cutoff }
                         state.carbHistoryForRegression.removeAll { $0.date < cutoff }
                         state.recentInsulinHistory.removeAll { $0.timestamp < cutoff }
+                        state.nightscoutInsulinHistory.removeAll { $0.timestamp < cutoff }
                     }
                     completion(.success(NightscoutImportResult(
                         glucoseCount: data.glucose.count,

@@ -46,12 +46,16 @@ struct O5TdiCalculator {
     /// - Parameters:
     ///   - doseEntries: Array of (startDate, endDate, deliveredUnits, isBasal) tuples
     ///     representing all insulin deliveries from DoseStore.
+    ///   - supplementalInsulin: Historical insulin entries imported from Nightscout,
+    ///     used to fill gaps when DoseStore has insufficient coverage (fresh install,
+    ///     phone change). These are only used for days not covered by doseEntries.
     ///   - windowDays: Lookback window (default 14 days per Insulet spec).
     ///   - seedTdi: Fallback TDI when insufficient data (default 14U).
     ///   - now: Current date (injectable for testing).
     /// - Returns: O5TdiResult with calculated TDI and data quality metrics.
     static func calculateTDI(
         from doseEntries: [(startDate: Date, endDate: Date, deliveredUnits: Double, isBasal: Bool)],
+        supplementalInsulin: [(timestamp: Date, units: Double)] = [],
         windowDays: Int = defaultWindowDays,
         seedTdi: Double = defaultSeedTdi,
         now: Date = Date()
@@ -64,7 +68,16 @@ struct O5TdiCalculator {
             entry.endDate >= windowStart && entry.startDate <= now
         }
 
-        guard !relevantDoses.isEmpty else {
+        // Convert supplemental Nightscout insulin into dose-shaped entries
+        // for days not covered by DoseStore data.
+        let mergedDoses = mergeWithSupplementalInsulin(
+            primary: relevantDoses,
+            supplemental: supplementalInsulin,
+            windowStart: windowStart,
+            windowEnd: now
+        )
+
+        guard !mergedDoses.isEmpty else {
             return O5TdiResult(
                 tdiValue: UInt8(clamping: Int(seedTdi.rounded())),
                 tdiUnitsDouble: seedTdi,
@@ -78,7 +91,7 @@ struct O5TdiCalculator {
 
         // Analyze data continuity — mirrors getDataTimeAndGapTime()
         let (dataSeconds, gapSeconds, _) = analyzeDataContinuity(
-            doses: relevantDoses,
+            doses: mergedDoses,
             windowStart: windowStart,
             windowEnd: now
         )
@@ -89,7 +102,7 @@ struct O5TdiCalculator {
 
         // Sum all insulin delivered, clipping doses to the window boundaries
         var totalInsulin: Double = 0
-        for dose in relevantDoses {
+        for dose in mergedDoses {
             let effectiveStart = max(dose.startDate, windowStart)
             let effectiveEnd = min(dose.endDate, now)
             let durationRatio: Double
@@ -130,6 +143,45 @@ struct O5TdiCalculator {
             calculationTimestamp: now,
             recordCount: relevantDoses.count
         )
+    }
+
+    /// Merges supplemental Nightscout insulin entries into the primary dose stream,
+    /// only filling time ranges where DoseStore has no data (gaps > 6h).
+    private static func mergeWithSupplementalInsulin(
+        primary: [(startDate: Date, endDate: Date, deliveredUnits: Double, isBasal: Bool)],
+        supplemental: [(timestamp: Date, units: Double)],
+        windowStart: Date,
+        windowEnd: Date
+    ) -> [(startDate: Date, endDate: Date, deliveredUnits: Double, isBasal: Bool)] {
+
+        guard !supplemental.isEmpty else { return primary }
+
+        // Find time ranges covered by primary (DoseStore) data
+        let sorted = primary.sorted { $0.startDate < $1.startDate }
+        var coveredRanges: [(start: Date, end: Date)] = []
+        for dose in sorted {
+            let s = max(dose.startDate, windowStart)
+            let e = min(dose.endDate, windowEnd)
+            guard e > s else { continue }
+            if let last = coveredRanges.last, s <= last.end.addingTimeInterval(3600) {
+                coveredRanges[coveredRanges.count - 1].end = max(last.end, e)
+            } else {
+                coveredRanges.append((start: s, end: e))
+            }
+        }
+
+        // Only use supplemental entries that fall in uncovered gaps
+        let supplementalDoses: [(startDate: Date, endDate: Date, deliveredUnits: Double, isBasal: Bool)] = supplemental.compactMap { entry in
+            guard entry.timestamp >= windowStart && entry.timestamp <= windowEnd else { return nil }
+            let isCovered = coveredRanges.contains { entry.timestamp >= $0.start && entry.timestamp <= $0.end }
+            if isCovered { return nil }
+            return (startDate: entry.timestamp,
+                    endDate: entry.timestamp.addingTimeInterval(recordInterval),
+                    deliveredUnits: entry.units,
+                    isBasal: false)
+        }
+
+        return primary + supplementalDoses
     }
 
     /// Analyzes temporal continuity of dose data within the window.

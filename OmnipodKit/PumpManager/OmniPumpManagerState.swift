@@ -116,6 +116,10 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
     /// Entries are appended as doses are stored and pruned to the window.
     internal var recentInsulinHistory: [InsulinHistoryEntry] = []
 
+    /// Insulin history imported from Nightscout, kept separate from pod-delivered doses.
+    /// Used as supplemental data for TDI calculation when DoseStore has gaps.
+    internal var nightscoutInsulinHistory: [InsulinHistoryEntry] = []
+
     /// Pending loop state command to send to the pod on the next BLE session.
     /// Set when the algorithm mode changes; consumed by handlePodUpdatesAsNeeded().
     internal var pendingO5LoopState: Int?
@@ -437,6 +441,9 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
         if let historyRaw = rawValue["recentInsulinHistory"] as? [[String: Any]] {
             self.recentInsulinHistory = historyRaw.compactMap { InsulinHistoryEntry(rawValue: $0) }
         }
+        if let nsHistoryRaw = rawValue["nightscoutInsulinHistory"] as? [[String: Any]] {
+            self.nightscoutInsulinHistory = nsHistoryRaw.compactMap { InsulinHistoryEntry(rawValue: $0) }
+        }
 
         self.pendingO5LoopState = rawValue["pendingO5LoopState"] as? Int
 
@@ -511,6 +518,9 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
         value["previousPodState"] = previousPodState?.rawValue
         if !recentInsulinHistory.isEmpty {
             value["recentInsulinHistory"] = recentInsulinHistory.map { $0.rawValue }
+        }
+        if !nightscoutInsulinHistory.isEmpty {
+            value["nightscoutInsulinHistory"] = nightscoutInsulinHistory.map { $0.rawValue }
         }
         value["pendingO5LoopState"] = pendingO5LoopState
         value["preferredO5AlgorithmMode"] = preferredO5AlgorithmMode.rawValue

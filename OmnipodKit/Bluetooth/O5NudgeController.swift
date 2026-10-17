@@ -32,6 +32,9 @@ protocol O5NudgeDataSource: AnyObject {
     /// Dose history for TDI calculation: (startDate, endDate, deliveredUnits, isBasal).
     func recentDoseHistory(since: Date) -> [(startDate: Date, endDate: Date, deliveredUnits: Double, isBasal: Bool)]
 
+    /// Supplemental insulin history from Nightscout for TDI gap-filling on fresh installs.
+    func supplementalInsulinHistory(since: Date) -> [(timestamp: Date, units: Double)]
+
     /// Current glucose target schedule as (startTime seconds from midnight, target mg/dL).
     func currentGlucoseTargets() -> [(startTime: TimeInterval, targetMgdl: Double)]?
 
@@ -305,10 +308,12 @@ class O5NudgeController {
 
         let windowStart = Date().addingTimeInterval(-14 * 86400)
         let doses = dataSource.recentDoseHistory(since: windowStart)
+        let supplemental = dataSource.supplementalInsulinHistory(since: windowStart)
 
         let tdiResult = O5TdiCalculator.calculateTDI(
             from: doses.map { (startDate: $0.startDate, endDate: $0.endDate,
-                               deliveredUnits: $0.deliveredUnits, isBasal: $0.isBasal) }
+                               deliveredUnits: $0.deliveredUnits, isBasal: $0.isBasal) },
+            supplementalInsulin: supplemental
         )
 
         // Guard: never send TDI=0 to the pod — its AID algorithm divides by TDI.

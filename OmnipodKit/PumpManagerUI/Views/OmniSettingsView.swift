@@ -625,8 +625,7 @@ struct OmniSettingsView: View  {
                 }
 
                 // Nightscout data import for regression
-                if viewModel.isO5Pod {
-                    DisclosureGroup(
+                DisclosureGroup(
                         content: {
                             VStack(alignment: .leading, spacing: 8) {
                                 TextField("Nightscout URL", text: $viewModel.nightscoutURL)
@@ -672,8 +671,7 @@ struct OmniSettingsView: View  {
                                 Text(LocalizedString("Import from Nightscout", comment: "Nightscout import section"))
                             }
                         }
-                    )
-                }
+                )
 
                 // O5 Therapy Insights (15-day regression report)
                 if viewModel.isO5Pod {
