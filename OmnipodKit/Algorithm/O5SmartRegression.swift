@@ -169,7 +169,7 @@ enum ScheduleMerger {
         suggestionEnd: TimeInterval,
         newRate: Double
     ) -> [RepeatingScheduleValue<Double>] {
-        merge(current: current, start: suggestionStart, end: suggestionEnd, newValue: newRate)
+        replaceRange(current: current, start: suggestionStart, end: suggestionEnd, newValue: newRate)
     }
 
     static func mergeISF(
@@ -178,7 +178,7 @@ enum ScheduleMerger {
         suggestionEnd: TimeInterval,
         newISF: Double
     ) -> [RepeatingScheduleValue<Double>] {
-        merge(current: current, start: suggestionStart, end: suggestionEnd, newValue: newISF)
+        replaceRange(current: current, start: suggestionStart, end: suggestionEnd, newValue: newISF)
     }
 
     static func mergeICR(
@@ -187,22 +187,41 @@ enum ScheduleMerger {
         suggestionEnd: TimeInterval,
         newICR: Double
     ) -> [RepeatingScheduleValue<Double>] {
-        merge(current: current, start: suggestionStart, end: suggestionEnd, newValue: newICR)
+        replaceRange(current: current, start: suggestionStart, end: suggestionEnd, newValue: newICR)
     }
 
-    private static func merge(
+    /// Replaces all entries within [start, end) with a single entry at `start`
+    /// carrying `newValue`. Entries outside the range are preserved as-is.
+    /// The first entry in the schedule (startTime == 0) is never removed —
+    /// its value is updated if it falls in range.
+    private static func replaceRange(
         current: [RepeatingScheduleValue<Double>],
         start: TimeInterval,
         end: TimeInterval,
         newValue: Double
     ) -> [RepeatingScheduleValue<Double>] {
         guard !current.isEmpty else { return current }
-        return current.map { entry in
+
+        var result: [RepeatingScheduleValue<Double>] = []
+        var inserted = false
+
+        for entry in current {
             if entry.startTime >= start && entry.startTime < end {
-                return RepeatingScheduleValue(startTime: entry.startTime, value: newValue)
+                if !inserted {
+                    result.append(RepeatingScheduleValue(startTime: start, value: newValue))
+                    inserted = true
+                }
+            } else {
+                result.append(entry)
             }
-            return entry
         }
+
+        if !inserted {
+            result.append(RepeatingScheduleValue(startTime: start, value: newValue))
+            result.sort { $0.startTime < $1.startTime }
+        }
+
+        return result
     }
 }
 

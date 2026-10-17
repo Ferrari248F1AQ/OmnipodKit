@@ -599,9 +599,9 @@ class OmniSettingsViewModel: ObservableObject {
     private var cachedICREntries: [RepeatingScheduleValue<Double>]?
 
     func refreshRegressionReport() {
-        let basalSchedule = pumpManager.state.podState?.glucoseTargetSchedule?.map {
-            (startTime: $0.startTime, rate: $0.value)
-        } ?? [(startTime: 0, rate: 1.0)]
+        let basalSchedule = pumpManager.state.basalSchedule.entries.map {
+            (startTime: $0.startTime, rate: $0.rate)
+        }
 
         let isfSchedule = pumpManager.state.podState?.correctionFactorSchedule?.map {
             (startTime: $0.startTime, mgdlPerUnit: $0.value)
