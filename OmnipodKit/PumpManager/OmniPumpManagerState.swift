@@ -53,12 +53,18 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
         podState?.latestGlucoseMgdl = mgdl
         podState?.latestGlucoseDate = date
 
-        recentGlucoseHistory.append(GlucoseHistoryEntry(mgdl: mgdl, date: date))
+        let entry = GlucoseHistoryEntry(mgdl: mgdl, date: date)
+
+        recentGlucoseHistory.append(entry)
         let cutoff = Date().addingTimeInterval(-30 * 60)
         recentGlucoseHistory.removeAll { $0.date < cutoff }
         if recentGlucoseHistory.count > 30 {
             recentGlucoseHistory = Array(recentGlucoseHistory.suffix(30))
         }
+
+        glucoseHistoryForRegression.append(entry)
+        let regressionCutoff = Date().addingTimeInterval(-14 * 86400)
+        glucoseHistoryForRegression.removeAll { $0.date < regressionCutoff }
     }
 
     var timeZone: TimeZone
@@ -111,6 +117,12 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
     /// Rolling buffer of recent glucose readings for CGM history burst on AID switch.
     /// Kept to last 30 minutes (~6 readings at 5min intervals).
     internal var recentGlucoseHistory: [GlucoseHistoryEntry] = []
+
+    /// Rolling 14-day glucose history for regression analysis.
+    internal var glucoseHistoryForRegression: [GlucoseHistoryEntry] = []
+
+    /// Rolling 14-day carb entry history for regression analysis.
+    internal var carbHistoryForRegression: [CarbHistoryEntry] = []
 
     // Indicates that the user has completed initial configuration
     // which means they have configured any parameters, but may not have paired a pod yet.
@@ -428,6 +440,14 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
             self.recentGlucoseHistory = glucoseRaw.compactMap { GlucoseHistoryEntry(rawValue: $0) }
         }
 
+        if let glucoseRegRaw = rawValue["glucoseHistoryForRegression"] as? [[String: Any]] {
+            self.glucoseHistoryForRegression = glucoseRegRaw.compactMap { GlucoseHistoryEntry(rawValue: $0) }
+        }
+
+        if let carbRegRaw = rawValue["carbHistoryForRegression"] as? [[String: Any]] {
+            self.carbHistoryForRegression = carbRegRaw.compactMap { CarbHistoryEntry(rawValue: $0) }
+        }
+
         if podType.isEros {
             // Some more Eros specific values
             if let pairingAttemptAddress = rawValue["pairingAttemptAddress"] as? UInt32 {
@@ -476,6 +496,12 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
         value["preferredO5AlgorithmMode"] = preferredO5AlgorithmMode.rawValue
         if !recentGlucoseHistory.isEmpty {
             value["recentGlucoseHistory"] = recentGlucoseHistory.map { $0.rawValue }
+        }
+        if !glucoseHistoryForRegression.isEmpty {
+            value["glucoseHistoryForRegression"] = glucoseHistoryForRegression.map { $0.rawValue }
+        }
+        if !carbHistoryForRegression.isEmpty {
+            value["carbHistoryForRegression"] = carbHistoryForRegression.map { $0.rawValue }
         }
 
         return value
@@ -626,5 +652,36 @@ struct GlucoseHistoryEntry: Equatable {
             return nil
         }
         self.date = Date(timeIntervalSinceReferenceDate: ts)
+    }
+}
+
+/// Lightweight carb entry for regression analysis history.
+struct CarbHistoryEntry: Codable, Equatable {
+    let date: Date
+    let grams: Double
+    let absorptionTime: TimeInterval
+
+    var rawValue: [String: Any] {
+        return [
+            "date": date.timeIntervalSinceReferenceDate,
+            "grams": grams,
+            "absorptionTime": absorptionTime,
+        ]
+    }
+
+    init(date: Date, grams: Double, absorptionTime: TimeInterval) {
+        self.date = date
+        self.grams = grams
+        self.absorptionTime = absorptionTime
+    }
+
+    init?(rawValue: [String: Any]) {
+        guard let ts = rawValue["date"] as? TimeInterval,
+              let grams = rawValue["grams"] as? Double else {
+            return nil
+        }
+        self.date = Date(timeIntervalSinceReferenceDate: ts)
+        self.grams = grams
+        self.absorptionTime = rawValue["absorptionTime"] as? TimeInterval ?? 10800
     }
 }

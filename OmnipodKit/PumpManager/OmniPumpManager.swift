@@ -2861,6 +2861,10 @@ extension OmniPumpManager: PumpManager {
         }
     }
 
+    public func recordCarbEntryForExternalAlgorithm(date: Date, grams: Double, absorptionTime: TimeInterval) {
+        recordCarbEntry(date: date, grams: grams, absorptionTime: absorptionTime)
+    }
+
     public func configureCgmForExternalAlgorithm(cgmIdentifier: String, transmitterId: String) {
         guard state.podType.isO5, !transmitterId.isEmpty else { return }
 
@@ -4117,6 +4121,30 @@ extension OmniPumpManager: O5NudgeDataSource {
         }
 
         return doses
+    }
+
+    func glucoseHistoryForRegression(since: Date) -> [(mgdl: Int, date: Date)] {
+        return state.glucoseHistoryForRegression
+            .filter { $0.date >= since }
+            .sorted { $0.date < $1.date }
+            .map { (mgdl: $0.mgdl, date: $0.date) }
+    }
+
+    func carbHistoryForRegression(since: Date) -> [(date: Date, grams: Double, absorptionTime: TimeInterval)] {
+        return state.carbHistoryForRegression
+            .filter { $0.date >= since }
+            .sorted { $0.date < $1.date }
+            .map { (date: $0.date, grams: $0.grams, absorptionTime: $0.absorptionTime) }
+    }
+
+    public func recordCarbEntry(date: Date, grams: Double, absorptionTime: TimeInterval) {
+        setState { state in
+            state.carbHistoryForRegression.append(
+                CarbHistoryEntry(date: date, grams: grams, absorptionTime: absorptionTime)
+            )
+            let cutoff = Date().addingTimeInterval(-14 * 86400)
+            state.carbHistoryForRegression.removeAll { $0.date < cutoff }
+        }
     }
 
     func currentGlucoseTargets() -> [(startTime: TimeInterval, targetMgdl: Double)]? {

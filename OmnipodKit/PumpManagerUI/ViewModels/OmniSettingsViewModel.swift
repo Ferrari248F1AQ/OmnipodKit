@@ -613,10 +613,17 @@ class OmniSettingsViewModel: ObservableObject {
             RepeatingScheduleValue(startTime: $0.startTime, value: $0.gramsPerUnit)
         }
 
-        let glucose: [GlucoseSample] = []
-        let carbs: [CarbEntry] = []
+        let since = Date().addingTimeInterval(-14 * 86400)
 
-        let recentDoses = pumpManager.recentDoseHistory(since: Date().addingTimeInterval(-14 * 86400))
+        let glucose = pumpManager.glucoseHistoryForRegression(since: since).map {
+            GlucoseSample(date: $0.date, mgdl: Double($0.mgdl))
+        }
+
+        let carbs = pumpManager.carbHistoryForRegression(since: since).map {
+            CarbEntry(date: $0.date, grams: $0.grams, absorptionTime: $0.absorptionTime)
+        }
+
+        let recentDoses = pumpManager.recentDoseHistory(since: since)
         let insulin = recentDoses.map {
             InsulinDelivery(startDate: $0.startDate, endDate: $0.endDate, units: $0.deliveredUnits, isBasal: $0.isBasal, isAutomatic: $0.isBasal)
         }
