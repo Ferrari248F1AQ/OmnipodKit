@@ -626,6 +626,7 @@ class OmniSettingsViewModel: ObservableObject {
         }
     }
 
+    private var cachedISFEntries: [RepeatingScheduleValue<Double>]?
     private var cachedICREntries: [RepeatingScheduleValue<Double>]?
 
     func refreshRegressionReport() {
@@ -633,9 +634,16 @@ class OmniSettingsViewModel: ObservableObject {
             (startTime: $0.startTime, rate: $0.rate)
         }
 
-        let isfSchedule = pumpManager.state.podState?.correctionFactorSchedule?.map {
-            (startTime: $0.startTime, mgdlPerUnit: $0.value)
-        } ?? [(startTime: 0, mgdlPerUnit: 50.0)]
+        let storedISF = pumpManager.state.isfScheduleForRegression
+        let isfSchedule: [(startTime: TimeInterval, mgdlPerUnit: Double)] = storedISF.isEmpty
+            ? (pumpManager.state.podState?.correctionFactorSchedule?.map {
+                (startTime: $0.startTime, mgdlPerUnit: $0.value)
+            } ?? [(startTime: 0, mgdlPerUnit: 50.0)])
+            : storedISF
+
+        cachedISFEntries = isfSchedule.map {
+            RepeatingScheduleValue(startTime: $0.startTime, value: $0.mgdlPerUnit)
+        }
 
         let storedICR = pumpManager.state.carbRatioScheduleForRegression
         let icrSchedule: [(startTime: TimeInterval, gramsPerUnit: Double)] = storedICR.isEmpty
@@ -699,8 +707,8 @@ class OmniSettingsViewModel: ObservableObject {
         log.default("Applying ISF suggestion: %.0f mg/dL/U for time block %@",
                     suggestion.suggestedISF, suggestion.timeBlock.displayName)
 
-        guard let current = pumpManager.currentISFScheduleItems(), !current.isEmpty else {
-            log.error("No current ISF schedule available")
+        guard let current = cachedISFEntries, !current.isEmpty else {
+            log.error("No current ISF schedule available — refresh regression report first")
             return
         }
         let merged = ScheduleMerger.mergeISF(

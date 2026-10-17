@@ -2844,6 +2844,14 @@ extension OmniPumpManager: PumpManager {
         }
     }
 
+    public func updateISFScheduleForExternalAlgorithm(isfEntries: [(TimeInterval, Double)]) {
+        setState { state in
+            state.isfScheduleForRegression = isfEntries.map {
+                (startTime: $0.0, mgdlPerUnit: $0.1)
+            }
+        }
+    }
+
     public func updateCarbRatioScheduleForExternalAlgorithm(carbRatios: [(TimeInterval, Double)]) {
         setState { state in
             state.carbRatioScheduleForRegression = carbRatios.map {

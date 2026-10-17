@@ -50,6 +50,9 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
         podState?.glucoseTargetSchedule = glucoseTargets
     }
 
+    /// ISF schedule forwarded from Loop for regression analysis: (startTime, mgdlPerUnit)
+    var isfScheduleForRegression: [(startTime: TimeInterval, mgdlPerUnit: Double)] = []
+
     /// ICR schedule forwarded from Loop for regression analysis: (startTime, gramsPerUnit)
     var carbRatioScheduleForRegression: [(startTime: TimeInterval, gramsPerUnit: Double)] = []
 
@@ -465,6 +468,14 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
             self.carbHistoryForRegression = carbRegRaw.compactMap { CarbHistoryEntry(rawValue: $0) }
         }
 
+        if let isfRaw = rawValue["isfScheduleForRegression"] as? [[String: Any]] {
+            self.isfScheduleForRegression = isfRaw.compactMap { dict in
+                guard let startTime = dict["startTime"] as? TimeInterval,
+                      let mgdlPerUnit = dict["mgdlPerUnit"] as? Double else { return nil }
+                return (startTime: startTime, mgdlPerUnit: mgdlPerUnit)
+            }
+        }
+
         if let icrRaw = rawValue["carbRatioScheduleForRegression"] as? [[String: Any]] {
             self.carbRatioScheduleForRegression = icrRaw.compactMap { dict in
                 guard let startTime = dict["startTime"] as? TimeInterval,
@@ -533,6 +544,11 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
         }
         if !carbHistoryForRegression.isEmpty {
             value["carbHistoryForRegression"] = carbHistoryForRegression.map { $0.rawValue }
+        }
+        if !isfScheduleForRegression.isEmpty {
+            value["isfScheduleForRegression"] = isfScheduleForRegression.map {
+                ["startTime": $0.startTime, "mgdlPerUnit": $0.mgdlPerUnit] as [String: Any]
+            }
         }
         if !carbRatioScheduleForRegression.isEmpty {
             value["carbRatioScheduleForRegression"] = carbRatioScheduleForRegression.map {
