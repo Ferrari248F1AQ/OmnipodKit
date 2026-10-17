@@ -425,7 +425,7 @@ class O5NudgeController {
     ///   utcTimestamp, aidActivated, isActivityActive, safeBasalMode,
     ///   egvRate, cgmAlgoState, cgmTxState, hypoProtect, limitedBasal,
     ///   qnReadiness, qnTryTimes, er48, algorithmPulses
-    private func parseAidStatusResponse(_ data: Data) -> O5AidStatus {
+    func parseAidStatusResponse(_ data: Data) -> O5AidStatus {
         var status = O5AidStatus()
 
         guard data.count >= 20 else {
