@@ -16,26 +16,31 @@ struct O5AlgorithmModeView: View {
     var isO5Pod: Bool
     var onModeChange: (O5AlgorithmMode) throws -> Void
 
+    @State private var pickerMode: O5AlgorithmMode = .loopAlgorithm
     @State private var showingConfirmation = false
     @State private var pendingMode: O5AlgorithmMode?
     @State private var switchError: String?
     @State private var showingSwitchError = false
-    @State private var isReverting = false
 
     var body: some View {
         if isO5Pod {
             Section(header: SectionHeader(label: LocalizedString("Dosing Algorithm", comment: "Section header for O5 algorithm mode"))) {
 
-                // Segmented picker
                 VStack(alignment: .leading, spacing: 12) {
-                    Picker("Algorithm", selection: $selectedMode) {
+                    Picker("Algorithm", selection: $pickerMode) {
                         ForEach(O5AlgorithmMode.allCases, id: \.self) { mode in
                             Text(mode.shortName).tag(mode)
                         }
                     }
                     .pickerStyle(SegmentedPickerStyle())
+                    .onAppear {
+                        pickerMode = selectedMode
+                    }
                     .onChange(of: selectedMode) { newValue in
-                        guard !isReverting else { return }
+                        pickerMode = newValue
+                    }
+                    .onChange(of: pickerMode) { newValue in
+                        guard newValue != selectedMode else { return }
                         pendingMode = newValue
                         showingConfirmation = true
                     }
@@ -43,7 +48,6 @@ struct O5AlgorithmModeView: View {
                     modeDescription
                 }
 
-                // Live AID stats when Insulet mode is active
                 if selectedMode == .insuletAID, let status = aidStatus {
                     aidStatusRow(status)
                 }
@@ -57,9 +61,7 @@ struct O5AlgorithmModeView: View {
                             do {
                                 try onModeChange(mode)
                             } catch {
-                                isReverting = true
-                                selectedMode = mode == .loopAlgorithm ? .insuletAID : .loopAlgorithm
-                                isReverting = false
+                                pickerMode = selectedMode
                                 switchError = error.localizedDescription
                                 DispatchQueue.main.async {
                                     showingSwitchError = true
@@ -68,11 +70,7 @@ struct O5AlgorithmModeView: View {
                         }
                     },
                     secondaryButton: .cancel {
-                        isReverting = true
-                        if let mode = pendingMode {
-                            selectedMode = mode == .loopAlgorithm ? .insuletAID : .loopAlgorithm
-                        }
-                        isReverting = false
+                        pickerMode = selectedMode
                     }
                 )
             }
