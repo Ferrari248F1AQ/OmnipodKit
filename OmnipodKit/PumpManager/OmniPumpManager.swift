@@ -2842,6 +2842,29 @@ extension OmniPumpManager: PumpManager {
         }
     }
 
+    public func configureCgmForExternalAlgorithm(cgmIdentifier: String, transmitterId: String) {
+        guard state.podType.isO5 else { return }
+
+        let sensorType: O5CgmType
+        switch cgmIdentifier {
+        case "DexG5Transmitter", "DexG6Transmitter":
+            sensorType = .dexcomG6
+        case "G7CGMManager":
+            sensorType = .dexcomG7
+        case let id where id.lowercased().contains("libre"):
+            sensorType = .libre2
+        default:
+            log.info("Unknown CGM identifier '%{public}@' for O5 sensor config", cgmIdentifier)
+            return
+        }
+
+        var config = O5CgmSensorConfig(sensorType: sensorType)
+        config.transmitterId = transmitterId
+        self.o5CgmSensorConfig = config
+        log.default("Configured O5 CGM sensor: type=%{public}@, txId=%{public}@",
+                    sensorType.displayName, transmitterId)
+    }
+
     public var rawState: PumpManager.RawStateValue {
         return state.rawValue
     }
