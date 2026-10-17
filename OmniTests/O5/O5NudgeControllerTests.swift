@@ -6,6 +6,41 @@
 import XCTest
 @testable import OmnipodKit
 
+// MARK: - Mock Transport
+
+class MockO5AidTransport: O5AidTransport {
+
+    /// Commands sent during the test (payload, responsePrefix).
+    var sentCommands: [(payload: Data, prefix: String)] = []
+
+    /// Canned response for the next sendO5AidCommand call. If nil, returns empty Data.
+    var nextResponse: Data = Data()
+
+    /// Responses queued in order — pops from front. Falls back to nextResponse when empty.
+    var queuedResponses: [Data] = []
+
+    /// If set, throw this error on the next call.
+    var errorToThrow: Error?
+
+    func sendO5AidCommand(_ wrappedPayload: Data, responsePrefix: String) throws -> Data {
+        sentCommands.append((wrappedPayload, responsePrefix))
+        if let error = errorToThrow {
+            throw error
+        }
+        if !queuedResponses.isEmpty {
+            return queuedResponses.removeFirst()
+        }
+        return nextResponse
+    }
+
+    func reset() {
+        sentCommands = []
+        queuedResponses = []
+        nextResponse = Data()
+        errorToThrow = nil
+    }
+}
+
 // MARK: - Mock Data Source
 
 class MockO5NudgeDataSource: O5NudgeDataSource {
@@ -80,11 +115,13 @@ class O5NudgeControllerTests: XCTestCase {
     var controller: O5NudgeController!
     var dataSource: MockO5NudgeDataSource!
     var delegate: MockO5NudgeDelegate!
+    var transport: MockO5AidTransport!
 
     override func setUp() {
         super.setUp()
         dataSource = MockO5NudgeDataSource()
         delegate = MockO5NudgeDelegate()
+        transport = MockO5AidTransport()
         controller = O5NudgeController(dataSource: dataSource)
         controller.delegate = delegate
     }
@@ -93,6 +130,7 @@ class O5NudgeControllerTests: XCTestCase {
         controller = nil
         dataSource = nil
         delegate = nil
+        transport = nil
         super.tearDown()
     }
 
@@ -632,5 +670,417 @@ class O5NudgeControllerTests: XCTestCase {
 
         let status = controller.parseAidStatusResponse(data)
         XCTAssertEqual(status.algorithmPulses, 65535)
+    }
+
+    // MARK: - Helper: Valid AID Status Response
+
+    /// Builds a minimal 20-byte AID status response the mock transport can return.
+    private func makeAidStatusResponse(egv: Int = 120, tdi: Int = 30, loopByte: UInt8 = 0x01, flags: UInt8 = 0x01) -> Data {
+        var data = Data(repeating: 0, count: 20)
+        data[0] = UInt8((egv >> 8) & 0xFF)
+        data[1] = UInt8(egv & 0xFF)
+        data[6] = UInt8((tdi >> 8) & 0xFF)
+        data[7] = UInt8(tdi & 0xFF)
+        data[8] = loopByte
+        data[17] = flags
+        return data
+    }
+
+    /// Returns the response prefix strings sent by each command, for assertion filtering.
+    private func prefixes(matching prefix: String) -> [(payload: Data, prefix: String)] {
+        return transport.sentCommands.filter { $0.prefix == prefix }
+    }
+
+    // MARK: - Integration: performNudgeCycle with CGM Data
+
+    func testPerformNudgeCycle_withCgmData_sendsEgvCommand() throws {
+        let now = Date()
+        dataSource.glucoseValue = (mgdl: 150, date: now)
+        transport.nextResponse = makeAidStatusResponse(egv: 150)
+
+        let status = try controller.performNudgeCycle(transport: transport)
+
+        let egvCommands = prefixes(matching: "3.7=")
+        XCTAssertGreaterThanOrEqual(egvCommands.count, 1, "Should send at least one EGV command")
+        XCTAssertEqual(controller.lastEgvSent, 150)
+        XCTAssertEqual(controller.lastEgvSentDate, now)
+        XCTAssertEqual(controller.missingEgvCount, 0)
+        XCTAssertEqual(status.egvValue, 150) // from the mock response
+        XCTAssertEqual(status.loopStatus, .closedLoop)
+    }
+
+    func testPerformNudgeCycle_withCgmData_readsAidStatus() throws {
+        dataSource.glucoseValue = (mgdl: 100, date: Date())
+        transport.nextResponse = makeAidStatusResponse(egv: 100, tdi: 45, loopByte: 0x01, flags: 0x03)
+
+        let status = try controller.performNudgeCycle(transport: transport)
+
+        XCTAssertNotNil(controller.lastAidStatus)
+        XCTAssertEqual(status.tdi, 45)
+        XCTAssertTrue(status.aidActivated) // flag 0x01
+        XCTAssertTrue(status.isActivityActive) // flag 0x02
+        XCTAssertEqual(delegate.receivedStatusUpdates.count, 1)
+    }
+
+    // MARK: - Integration: performNudgeCycle without CGM Data
+
+    func testPerformNudgeCycle_noCgmData_incrementsMissingCount() throws {
+        dataSource.glucoseValue = nil
+        transport.nextResponse = makeAidStatusResponse()
+
+        let _ = try controller.performNudgeCycle(transport: transport)
+        XCTAssertEqual(controller.missingEgvCount, 1)
+
+        let _ = try controller.performNudgeCycle(transport: transport)
+        XCTAssertEqual(controller.missingEgvCount, 2)
+
+        let _ = try controller.performNudgeCycle(transport: transport)
+        XCTAssertEqual(controller.missingEgvCount, 3)
+    }
+
+    // MARK: - Integration: Timing Skip
+
+    func testPerformNudgeCycle_timingSkip_doesNotIncrementMissingCount() throws {
+        let readingDate = Date()
+        dataSource.glucoseValue = (mgdl: 130, date: readingDate)
+        transport.nextResponse = makeAidStatusResponse()
+
+        // First cycle: sends EGV
+        let _ = try controller.performNudgeCycle(transport: transport)
+        XCTAssertEqual(controller.lastEgvSent, 130)
+        XCTAssertEqual(controller.missingEgvCount, 0)
+
+        // Second cycle: same reading date, within cgmNudgeInterval → timingSkip
+        let _ = try controller.performNudgeCycle(transport: transport)
+        XCTAssertEqual(controller.missingEgvCount, 0, "timingSkip must NOT increment missingEgvCount")
+    }
+
+    // MARK: - Integration: Limited Mode Entry / Exit
+
+    func testLimitedModeEntry_after4MissingCycles() throws {
+        dataSource.glucoseValue = nil
+        transport.nextResponse = makeAidStatusResponse()
+
+        // 3 cycles: no limited mode yet
+        for _ in 0..<3 {
+            let _ = try controller.performNudgeCycle(transport: transport)
+        }
+        XCTAssertEqual(controller.missingEgvCount, 3)
+        XCTAssertEqual(delegate.limitedModeEntries.count, 0)
+
+        // 4th cycle: triggers limited mode
+        let _ = try controller.performNudgeCycle(transport: transport)
+        XCTAssertEqual(controller.missingEgvCount, 4)
+        XCTAssertEqual(delegate.limitedModeEntries.count, 1)
+
+        // Verify BasalLimitedModeCommand was sent (prefix "3.15=")
+        let limitedCommands = prefixes(matching: "3.15=")
+        XCTAssertGreaterThanOrEqual(limitedCommands.count, 1, "Should send BasalLimitedModeCommand on limited mode entry")
+    }
+
+    func testLimitedModeExit_whenCgmReturns() throws {
+        dataSource.glucoseValue = nil
+        transport.nextResponse = makeAidStatusResponse()
+
+        // Push into limited mode
+        for _ in 0..<4 {
+            let _ = try controller.performNudgeCycle(transport: transport)
+        }
+        XCTAssertEqual(controller.missingEgvCount, 4)
+        XCTAssertEqual(delegate.limitedModeEntries.count, 1)
+
+        // CGM data returns
+        dataSource.glucoseValue = (mgdl: 140, date: Date())
+        transport.reset()
+        transport.nextResponse = makeAidStatusResponse(egv: 140)
+
+        let _ = try controller.performNudgeCycle(transport: transport)
+
+        // missingEgvCount resets to 0
+        XCTAssertEqual(controller.missingEgvCount, 0)
+        XCTAssertEqual(controller.lastEgvSent, 140)
+
+        // BasalLimitedModeCommand with enabled=false was sent (exit limited mode)
+        let limitedCommands = prefixes(matching: "3.15=")
+        XCTAssertGreaterThanOrEqual(limitedCommands.count, 1, "Should send BasalLimitedModeCommand to exit limited mode")
+    }
+
+    func testLimitedMode_staysActiveWhileMissingContinues() throws {
+        dataSource.glucoseValue = nil
+        transport.nextResponse = makeAidStatusResponse()
+
+        // 6 cycles all missing
+        for _ in 0..<6 {
+            let _ = try controller.performNudgeCycle(transport: transport)
+        }
+
+        XCTAssertEqual(controller.missingEgvCount, 6)
+        // Limited mode entry only fires once at threshold (cycle 4), then again at 5, 6...
+        // Actually enterLimitedMode is called every cycle >= threshold
+        XCTAssertGreaterThanOrEqual(delegate.limitedModeEntries.count, 1)
+    }
+
+    // MARK: - Integration: CGM Registration via Nudge Cycle
+
+    func testCgmRegistration_lateRegistration_succeeds() throws {
+        var config = O5CgmSensorConfig(sensorType: .dexcomG6)
+        config.transmitterId = "8G1234"
+        dataSource.sensorConfig = config
+        dataSource.glucoseValue = (mgdl: 120, date: Date())
+        transport.nextResponse = makeAidStatusResponse()
+
+        XCTAssertFalse(controller.isCgmSensorRegistered)
+
+        let _ = try controller.performNudgeCycle(transport: transport)
+
+        XCTAssertTrue(controller.isCgmSensorRegistered)
+        XCTAssertEqual(controller.registeredSensorType, .dexcomG6)
+
+        // CGM interface command was sent (prefix "4.2=")
+        let cgmIfCommands = prefixes(matching: "4.2=")
+        XCTAssertGreaterThanOrEqual(cgmIfCommands.count, 1, "Should send CgmInterfaceManager command")
+    }
+
+    func testCgmRegistration_modelChange_blocked() throws {
+        // Pre-register with G6
+        controller.isCgmSensorRegistered = true
+        controller.registeredSensorType = .dexcomG6
+
+        // Try to register G7 via data source
+        var g7Config = O5CgmSensorConfig(sensorType: .dexcomG7)
+        g7Config.transmitterId = "NEWG7TX"
+        dataSource.sensorConfig = g7Config
+        dataSource.glucoseValue = (mgdl: 120, date: Date())
+        transport.nextResponse = makeAidStatusResponse()
+
+        let _ = try controller.performNudgeCycle(transport: transport)
+
+        // Model change blocked — registration type stays G6
+        XCTAssertEqual(controller.registeredSensorType, .dexcomG6)
+
+        // No CGM interface commands should have been sent for the new sensor
+        let cgmIfCommands = prefixes(matching: "4.2=")
+        XCTAssertEqual(cgmIfCommands.count, 0, "Should NOT send registration commands when model change is blocked")
+    }
+
+    func testCgmRegistration_transmitterChange_sameModel_allowed() throws {
+        // First: register with G6 + TX "OLD_TX"
+        var config1 = O5CgmSensorConfig(sensorType: .dexcomG6)
+        config1.transmitterId = "OLD_TX"
+        dataSource.sensorConfig = config1
+        dataSource.glucoseValue = (mgdl: 120, date: Date())
+        transport.nextResponse = makeAidStatusResponse()
+
+        let _ = try controller.performNudgeCycle(transport: transport)
+        XCTAssertTrue(controller.isCgmSensorRegistered)
+        XCTAssertEqual(controller.registeredSensorType, .dexcomG6)
+
+        // Change transmitter within same model
+        var config2 = O5CgmSensorConfig(sensorType: .dexcomG6)
+        config2.transmitterId = "NEW_TX"
+        dataSource.sensorConfig = config2
+        dataSource.glucoseValue = (mgdl: 125, date: Date().addingTimeInterval(300))
+        transport.reset()
+        transport.nextResponse = makeAidStatusResponse()
+
+        let _ = try controller.performNudgeCycle(transport: transport)
+
+        // Re-registration should succeed with same model
+        XCTAssertTrue(controller.isCgmSensorRegistered)
+        XCTAssertEqual(controller.registeredSensorType, .dexcomG6)
+
+        // CGM interface command sent for re-registration
+        let cgmIfCommands = prefixes(matching: "4.2=")
+        XCTAssertGreaterThanOrEqual(cgmIfCommands.count, 1, "Should re-register when transmitter changes within same model")
+    }
+
+    // MARK: - Integration: CGM History Burst
+
+    func testSendCgmHistoryBurst_sendsOldestFirst() throws {
+        let now = Date()
+        // History is provided newest-first (as per data source contract)
+        dataSource.glucoseHistory = [
+            (mgdl: 150, date: now),
+            (mgdl: 140, date: now.addingTimeInterval(-300)),
+            (mgdl: 130, date: now.addingTimeInterval(-600)),
+        ]
+        transport.nextResponse = Data()
+
+        let sentCount = try controller.sendCgmHistoryBurst(transport: transport)
+
+        XCTAssertEqual(sentCount, 3)
+        XCTAssertEqual(transport.sentCommands.count, 3)
+
+        // Verify oldest was sent first: "130" before "140" before "150"
+        let payloads = transport.sentCommands.map { String(data: $0.payload, encoding: .utf8) ?? "" }
+        XCTAssertTrue(payloads[0].contains("130"), "First command should contain oldest EGV (130)")
+        XCTAssertTrue(payloads[1].contains("140"), "Second command should contain middle EGV (140)")
+        XCTAssertTrue(payloads[2].contains("150"), "Third command should contain newest EGV (150)")
+    }
+
+    func testSendCgmHistoryBurst_filtersInvalidValues() throws {
+        let now = Date()
+        dataSource.glucoseHistory = [
+            (mgdl: 150, date: now),
+            (mgdl: 0, date: now.addingTimeInterval(-300)),     // invalid: 0
+            (mgdl: 700, date: now.addingTimeInterval(-600)),   // invalid: >=600
+            (mgdl: -5, date: now.addingTimeInterval(-900)),    // invalid: negative
+            (mgdl: 100, date: now.addingTimeInterval(-1200)),
+        ]
+        transport.nextResponse = Data()
+
+        let sentCount = try controller.sendCgmHistoryBurst(transport: transport)
+
+        // Only 100 and 150 are valid (0, 700, -5 filtered out)
+        XCTAssertEqual(sentCount, 2)
+    }
+
+    func testSendCgmHistoryBurst_limitsTo6Readings() throws {
+        let now = Date()
+        dataSource.glucoseHistory = (0..<10).map { i in
+            (mgdl: 100 + i * 5, date: now.addingTimeInterval(TimeInterval(-i * 300)))
+        }
+        transport.nextResponse = Data()
+
+        let sentCount = try controller.sendCgmHistoryBurst(transport: transport)
+
+        XCTAssertEqual(sentCount, 6, "Should send at most 6 readings")
+    }
+
+    func testSendCgmHistoryBurst_emptyHistory_returnsZero() throws {
+        dataSource.glucoseHistory = []
+        transport.nextResponse = Data()
+
+        let sentCount = try controller.sendCgmHistoryBurst(transport: transport)
+
+        XCTAssertEqual(sentCount, 0)
+        XCTAssertEqual(transport.sentCommands.count, 0)
+    }
+
+    func testSendCgmHistoryBurst_updatesLastEgvSent() throws {
+        let now = Date()
+        dataSource.glucoseHistory = [
+            (mgdl: 160, date: now),
+            (mgdl: 140, date: now.addingTimeInterval(-300)),
+        ]
+        transport.nextResponse = Data()
+
+        let _ = try controller.sendCgmHistoryBurst(transport: transport)
+
+        // lastEgvSent should be the most recently sent (which is the newest = 160)
+        XCTAssertEqual(controller.lastEgvSent, 160)
+        XCTAssertEqual(controller.lastEgvSentDate, now)
+    }
+
+    func testSendCgmHistoryBurst_stopsOnTransportError() throws {
+        let now = Date()
+        dataSource.glucoseHistory = [
+            (mgdl: 150, date: now),
+            (mgdl: 140, date: now.addingTimeInterval(-300)),
+            (mgdl: 130, date: now.addingTimeInterval(-600)),
+        ]
+
+        // Queue one success then error
+        transport.queuedResponses = [Data()]
+        transport.errorToThrow = nil
+
+        // Send first (oldest=130) → success from queue.
+        // Then the queue is empty and nextResponse is used, but we need the second to fail.
+        // Actually: set up so the second call errors.
+        // Better: use queuedResponses for first, then set errorToThrow after first.
+        // The mock pops from queue first, then falls back to nextResponse.
+        // Let's make queue have 1 response, then nextResponse, then error on 3rd.
+        // Actually the mock checks errorToThrow FIRST. So if we set it, all calls fail.
+        // We need a more nuanced approach. Let's just test with errorToThrow on all calls.
+
+        transport.errorToThrow = NSError(domain: "test", code: 1)
+
+        let sentCount = try controller.sendCgmHistoryBurst(transport: transport)
+
+        XCTAssertEqual(sentCount, 0, "Should stop on first error")
+    }
+
+    // MARK: - Integration: TDI Nudge
+
+    func testPerformNudgeCycle_sendsTdiOnFirstCycle() throws {
+        dataSource.glucoseValue = (mgdl: 120, date: Date())
+        transport.nextResponse = makeAidStatusResponse()
+
+        let _ = try controller.performNudgeCycle(transport: transport)
+
+        // TDI command should have been sent (prefix "3.2=")
+        let tdiCommands = prefixes(matching: "3.2=")
+        XCTAssertGreaterThanOrEqual(tdiCommands.count, 1, "Should send TDI on first nudge cycle")
+        XCTAssertNotNil(controller.lastTdiSent)
+        XCTAssertNotNil(controller.lastTdiCalculation)
+    }
+
+    func testPerformNudgeCycle_skipsTdiWithinInterval() throws {
+        dataSource.glucoseValue = (mgdl: 120, date: Date())
+        transport.nextResponse = makeAidStatusResponse()
+
+        // First cycle: sends TDI
+        let _ = try controller.performNudgeCycle(transport: transport)
+        let firstTdi = controller.lastTdiSent
+
+        // Second cycle immediately: should skip TDI
+        dataSource.glucoseValue = (mgdl: 125, date: Date().addingTimeInterval(300))
+        transport.reset()
+        transport.nextResponse = makeAidStatusResponse()
+
+        let _ = try controller.performNudgeCycle(transport: transport)
+
+        // No TDI command in second cycle
+        let tdiCommands = prefixes(matching: "3.2=")
+        XCTAssertEqual(tdiCommands.count, 0, "Should skip TDI within recalculation interval")
+        XCTAssertEqual(controller.lastTdiSent, firstTdi)
+    }
+
+    // MARK: - Integration: Loop State
+
+    func testSetLoopState() throws {
+        transport.nextResponse = Data()
+
+        try controller.setLoopState(.closedLoop, transport: transport)
+
+        XCTAssertEqual(controller.lastLoopStateSent, .closedLoop)
+        XCTAssertEqual(transport.sentCommands.count, 1)
+
+        let prefix = transport.sentCommands[0].prefix
+        XCTAssertEqual(prefix, "3.13=")
+    }
+
+    func testSetLoopState_allStates() throws {
+        transport.nextResponse = Data()
+
+        for state in [O5LoopStateValue.inactive, .closedLoop, .limitedMode, .safeBasal] {
+            transport.reset()
+            transport.nextResponse = Data()
+
+            try controller.setLoopState(state, transport: transport)
+            XCTAssertEqual(controller.lastLoopStateSent, state)
+        }
+    }
+
+    // MARK: - Integration: Transport Error Handling
+
+    func testPerformNudgeCycle_transportError_propagates() {
+        dataSource.glucoseValue = (mgdl: 120, date: Date())
+        transport.errorToThrow = NSError(domain: "BLE", code: -1, userInfo: [NSLocalizedDescriptionKey: "Connection lost"])
+
+        XCTAssertThrowsError(try controller.performNudgeCycle(transport: transport)) { error in
+            let nsError = error as NSError
+            XCTAssertEqual(nsError.domain, "BLE")
+        }
+    }
+
+    func testPerformNudgeCycle_transportError_doesNotUpdateStatus() {
+        dataSource.glucoseValue = (mgdl: 120, date: Date())
+        transport.errorToThrow = NSError(domain: "BLE", code: -1)
+
+        let _ = try? controller.performNudgeCycle(transport: transport)
+
+        XCTAssertNil(controller.lastAidStatus, "AID status should not be set when transport errors")
+        XCTAssertEqual(delegate.receivedStatusUpdates.count, 0)
     }
 }

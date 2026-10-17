@@ -14,6 +14,14 @@
 import Foundation
 import os.log
 
+// MARK: - O5 AID Transport Protocol
+
+/// Abstraction over the BLE transport layer for sending O5 AID commands.
+/// `BlePodMessageTransport` conforms to this in production; tests inject a mock.
+protocol O5AidTransport: AnyObject {
+    func sendO5AidCommand(_ wrappedPayload: Data, responsePrefix: String) throws -> Data
+}
+
 protocol O5NudgeDataSource: AnyObject {
     /// Latest CGM value in mg/dL and its timestamp.
     func latestGlucose() -> (mgdl: Int, date: Date)?
@@ -103,7 +111,7 @@ class O5NudgeController {
     ///
     /// - Parameter transport: The active BLE message transport for sending O5 AID commands.
     /// - Returns: Updated O5AidStatus from the pod.
-    func performNudgeCycle(transport: BlePodMessageTransport) throws -> O5AidStatus {
+    func performNudgeCycle(transport: O5AidTransport) throws -> O5AidStatus {
 
         // 0. Late-register CGM sensor if config became available after pod activation
         registerCgmSensorIfNeeded(transport: transport)
@@ -160,7 +168,7 @@ class O5NudgeController {
 
     /// Registers CGM sensor with an already-active pod if config became available after activation,
     /// or if the transmitter changed within the same sensor model.
-    private func registerCgmSensorIfNeeded(transport: BlePodMessageTransport) {
+    private func registerCgmSensorIfNeeded(transport: O5AidTransport) {
         guard let config = dataSource?.cgmSensorConfig() else { return }
 
         // Skip if already registered with the same transmitter
@@ -205,7 +213,7 @@ class O5NudgeController {
 
     /// Sends the latest CGM value to the pod via EgvCommand.
     @discardableResult
-    private func nudgeCgm(transport: BlePodMessageTransport) throws -> CgmNudgeResult {
+    private func nudgeCgm(transport: O5AidTransport) throws -> CgmNudgeResult {
         guard let dataSource = dataSource,
               let (mgdl, date) = dataSource.latestGlucose() else {
             log.default("No CGM data available for nudge")
@@ -243,7 +251,7 @@ class O5NudgeController {
     /// Sends up to 6 readings (oldest first) from the last 30 minutes,
     /// one EgvCommand per reading. The pod's Kalman filter uses the sequence
     /// to estimate glucose rate of change (x1) and acceleration (x2).
-    func sendCgmHistoryBurst(transport: BlePodMessageTransport) throws -> Int {
+    func sendCgmHistoryBurst(transport: O5AidTransport) throws -> Int {
         guard let dataSource = dataSource else { return 0 }
 
         let history = dataSource.recentGlucoseHistory(minutes: 30)
@@ -286,7 +294,7 @@ class O5NudgeController {
     // MARK: - TDI Nudge
 
     /// Recalculates and sends TDI if the recalculation interval has elapsed.
-    private func nudgeTdi(transport: BlePodMessageTransport) throws {
+    private func nudgeTdi(transport: O5AidTransport) throws {
         // Only recalculate hourly
         if let lastCalc = lastTdiCalculation,
            Date().timeIntervalSince(lastCalc) < O5NudgeController.tdiRecalculationInterval {
@@ -330,7 +338,7 @@ class O5NudgeController {
 
     // MARK: - Correction Factor Nudge
 
-    private func nudgeCorrectionFactor(transport: BlePodMessageTransport) throws {
+    private func nudgeCorrectionFactor(transport: O5AidTransport) throws {
         if let lastSent = lastCorrectionFactorSent,
            Date().timeIntervalSince(lastSent) < O5NudgeController.correctionFactorUpdateInterval {
             return
@@ -364,7 +372,7 @@ class O5NudgeController {
 
     // MARK: - Activity Mode
 
-    private func nudgeActivityMode(transport: BlePodMessageTransport) throws {
+    private func nudgeActivityMode(transport: O5AidTransport) throws {
         guard let (active, duration, intensity) = dataSource?.isActivityModeRequested() else { return }
 
         let currentlyActive = lastAidStatus?.isActivityActive ?? false
@@ -383,7 +391,7 @@ class O5NudgeController {
 
     // MARK: - Automated Limited Mode
 
-    private func enterLimitedMode(transport: BlePodMessageTransport) throws {
+    private func enterLimitedMode(transport: O5AidTransport) throws {
         log.default("Entering Automated Limited Mode after %d missing EGV readings", missingEgvCount)
 
         let (payload, prefix) = O5AidCommands.BasalLimitedModeCommand.setGet(enabled: true)
@@ -395,7 +403,7 @@ class O5NudgeController {
         delegate?.nudgeController(self, didEnterLimitedMode: "Missing \(missingEgvCount) consecutive EGV readings")
     }
 
-    private func exitLimitedMode(transport: BlePodMessageTransport) throws {
+    private func exitLimitedMode(transport: O5AidTransport) throws {
         log.default("Exiting Automated Limited Mode — CGM data restored")
 
         let (payload, prefix) = O5AidCommands.BasalLimitedModeCommand.setGet(enabled: false)
@@ -404,7 +412,7 @@ class O5NudgeController {
 
     // MARK: - Full AID Status Read
 
-    private func readFullAidStatus(transport: BlePodMessageTransport) throws -> O5AidStatus {
+    private func readFullAidStatus(transport: O5AidTransport) throws -> O5AidStatus {
         // Try UnifiedAidPodStatus (G3.12) first, fall back to AidPodStatus (G3.11)
         let response: Data
         do {
@@ -523,7 +531,7 @@ class O5NudgeController {
     // MARK: - Loop State Control
 
     /// Sets the pod's AID loop state (closed loop, limited, safe basal, inactive).
-    func setLoopState(_ state: O5LoopStateValue, transport: BlePodMessageTransport) throws {
+    func setLoopState(_ state: O5LoopStateValue, transport: O5AidTransport) throws {
         let (payload, prefix) = O5AidCommands.AidLoopStateCommand.set(state: state)
         let _ = try transport.sendO5AidCommand(payload, responsePrefix: prefix)
         lastLoopStateSent = state
@@ -531,7 +539,7 @@ class O5NudgeController {
     }
 
     /// Reads the current loop state from the pod.
-    func getLoopState(transport: BlePodMessageTransport) throws -> O5LoopStateValue {
+    func getLoopState(transport: O5AidTransport) throws -> O5LoopStateValue {
         let (payload, prefix) = O5AidCommands.AidLoopStateCommand.get()
         let response = try transport.sendO5AidCommand(payload, responsePrefix: prefix)
         guard response.count >= 1 else { return .inactive }
@@ -540,7 +548,7 @@ class O5NudgeController {
 
     // MARK: - Target BG Update
 
-    func sendTargetBgUpdate(transport: BlePodMessageTransport) throws {
+    func sendTargetBgUpdate(transport: O5AidTransport) throws {
         guard let targets = dataSource?.currentGlucoseTargets(), !targets.isEmpty else {
             return
         }
@@ -557,7 +565,7 @@ class O5NudgeController {
 
     // MARK: - Hypo Protection
 
-    func setHypoProtection(enabled: Bool, transport: BlePodMessageTransport) throws {
+    func setHypoProtection(enabled: Bool, transport: O5AidTransport) throws {
         var data = Data()
         data.append(enabled ? 0x01 : 0x00)
         let (payload, prefix) = O5AidCommands.HypoProtectionCommand.setGet(binaryData: data)
@@ -567,12 +575,12 @@ class O5NudgeController {
 
     // MARK: - Patient History
 
-    func readPatientHistoryLog(transport: BlePodMessageTransport) throws -> Data {
+    func readPatientHistoryLog(transport: O5AidTransport) throws -> Data {
         let (payload, prefix) = O5AidCommands.PatientHistoryLogCommand.get()
         return try transport.sendO5AidCommand(payload, responsePrefix: prefix)
     }
 
-    func enablePatientHistoryLogging(_ enabled: Bool, transport: BlePodMessageTransport) throws {
+    func enablePatientHistoryLogging(_ enabled: Bool, transport: O5AidTransport) throws {
         let (payload, prefix) = O5AidCommands.PatientHistoryLogEnabledCommand.setGet(enabled: enabled)
         let _ = try transport.sendO5AidCommand(payload, responsePrefix: prefix)
     }
@@ -581,7 +589,7 @@ class O5NudgeController {
 
     /// Processes a pod-initiated nudge message received during a BLE session.
     /// The pod sends these asynchronously: periodic status, alarms, and alerts.
-    func handlePodNudge(data: Data, transport: BlePodMessageTransport) {
+    func handlePodNudge(data: Data, transport: O5AidTransport) {
         guard data.count >= 2 else { return }
 
         let nudgeType = data[0]

@@ -87,7 +87,7 @@ extension BleMessageTransportState: CustomDebugStringConvertible {
     }
 }
 
-class BlePodMessageTransport: MessageTransport {
+class BlePodMessageTransport: MessageTransport, O5AidTransport {
     private let COMMAND_PREFIX = "S0.0="
     private let COMMAND_SUFFIX = ",G0.0"
     private let RESPONSE_PREFIX = "0.0="

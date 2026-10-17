@@ -104,7 +104,7 @@ class O5CgmPairingManager {
     /// 4. Send CGM pairing information (certificates, keys)
     func registerSensor(
         config: O5CgmSensorConfig,
-        transport: BlePodMessageTransport
+        transport: O5AidTransport
     ) throws {
 
         self.activeSensorConfig = config
@@ -144,7 +144,7 @@ class O5CgmPairingManager {
 
     // MARK: - CGM Interface
 
-    private func enableCgmInterface(transport: BlePodMessageTransport, sensorType: O5CgmType) throws {
+    private func enableCgmInterface(transport: O5AidTransport, sensorType: O5CgmType) throws {
         var data = Data()
         let typeCode: UInt8
         switch sensorType {
@@ -163,7 +163,7 @@ class O5CgmPairingManager {
 
     // MARK: - Transmitter ID
 
-    private func sendTransmitterId(_ txId: String, transport: BlePodMessageTransport) throws {
+    private func sendTransmitterId(_ txId: String, transport: O5AidTransport) throws {
         guard let txIdData = txId.data(using: .utf8) else { return }
 
         var data = Data()
@@ -178,7 +178,7 @@ class O5CgmPairingManager {
 
     // MARK: - G6 Sensor Info
 
-    private func sendG6SensorInfo(config: O5CgmSensorConfig, transport: BlePodMessageTransport) throws {
+    private func sendG6SensorInfo(config: O5CgmSensorConfig, transport: O5AidTransport) throws {
         var data = Data()
 
         // BLE address (6 bytes)
@@ -208,7 +208,7 @@ class O5CgmPairingManager {
 
     // MARK: - G7 Sensor Info
 
-    private func sendG7SensorInfo(config: O5CgmSensorConfig, transport: BlePodMessageTransport) throws {
+    private func sendG7SensorInfo(config: O5CgmSensorConfig, transport: O5AidTransport) throws {
         var data = Data()
 
         // Pairing code (4 bytes ASCII, padded)
@@ -255,7 +255,7 @@ class O5CgmPairingManager {
 
     // MARK: - Libre 2 Sensor Info
 
-    private func sendLibre2SensorInfo(config: O5CgmSensorConfig, transport: BlePodMessageTransport) throws {
+    private func sendLibre2SensorInfo(config: O5CgmSensorConfig, transport: O5AidTransport) throws {
         var data = Data()
 
         // Sensor UID
@@ -290,7 +290,7 @@ class O5CgmPairingManager {
 
     // MARK: - Libre 3 Sensor Info
 
-    private func sendLibre3SensorInfo(config: O5CgmSensorConfig, transport: BlePodMessageTransport) throws {
+    private func sendLibre3SensorInfo(config: O5CgmSensorConfig, transport: O5AidTransport) throws {
         var data = Data()
 
         // Sensor UID
@@ -331,7 +331,7 @@ class O5CgmPairingManager {
 
     // MARK: - CGM Pairing Information (Certificates)
 
-    private func sendCgmPairingInfo(config: O5CgmSensorConfig, transport: BlePodMessageTransport) throws {
+    private func sendCgmPairingInfo(config: O5CgmSensorConfig, transport: O5AidTransport) throws {
         var data = Data()
 
         // App certificate data
@@ -393,7 +393,7 @@ class O5CgmPairingManager {
     }
 
     /// Sends a special EGV value to the pod to indicate CGM state change.
-    func sendSpecialEgv(_ specialValue: Int, transport: BlePodMessageTransport) throws {
+    func sendSpecialEgv(_ specialValue: Int, transport: O5AidTransport) throws {
         let (payload, prefix) = O5AidCommands.EgvCommand.payload(value: "\(specialValue)")
         let _ = try transport.sendO5AidCommand(payload, responsePrefix: prefix)
     }
