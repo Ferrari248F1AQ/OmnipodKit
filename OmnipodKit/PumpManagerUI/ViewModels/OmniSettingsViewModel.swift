@@ -596,6 +596,8 @@ class OmniSettingsViewModel: ObservableObject {
         o5AlgorithmMode = mode
     }
 
+    private var cachedICREntries: [RepeatingScheduleValue<Double>]?
+
     func refreshRegressionReport() {
         let basalSchedule = pumpManager.state.podState?.glucoseTargetSchedule?.map {
             (startTime: $0.startTime, rate: $0.value)
@@ -606,6 +608,10 @@ class OmniSettingsViewModel: ObservableObject {
         } ?? [(startTime: 0, mgdlPerUnit: 50.0)]
 
         let icrSchedule: [(startTime: TimeInterval, gramsPerUnit: Double)] = [(startTime: 0, gramsPerUnit: 10.0)]
+
+        cachedICREntries = icrSchedule.map {
+            RepeatingScheduleValue(startTime: $0.startTime, value: $0.gramsPerUnit)
+        }
 
         let glucose: [GlucoseSample] = []
         let insulin: [InsulinDelivery] = []
@@ -624,16 +630,71 @@ class OmniSettingsViewModel: ObservableObject {
     func applyBasalSuggestion(_ suggestion: BasalSuggestion) {
         log.default("Applying basal suggestion: %.2f U/hr for time block %@",
                     suggestion.suggestedRate, suggestion.timeBlock.displayName)
+
+        let current = pumpManager.currentBasalScheduleItems()
+        guard !current.isEmpty else {
+            log.error("No current basal schedule available")
+            return
+        }
+        let merged = ScheduleMerger.mergeBasal(
+            current: current,
+            suggestionStart: suggestion.startTime,
+            suggestionEnd: suggestion.endTime,
+            newRate: suggestion.suggestedRate
+        )
+        pumpManager.applyMergedBasalSchedule(items: merged) { [weak self] error in
+            if let error = error {
+                self?.log.error("Failed to apply basal suggestion: %{public}@", error.localizedDescription)
+            } else {
+                self?.log.default("Basal suggestion applied successfully")
+            }
+        }
     }
 
     func applyISFSuggestion(_ suggestion: ISFSuggestion) {
         log.default("Applying ISF suggestion: %.0f mg/dL/U for time block %@",
                     suggestion.suggestedISF, suggestion.timeBlock.displayName)
+
+        guard let current = pumpManager.currentISFScheduleItems(), !current.isEmpty else {
+            log.error("No current ISF schedule available")
+            return
+        }
+        let merged = ScheduleMerger.mergeISF(
+            current: current,
+            suggestionStart: suggestion.startTime,
+            suggestionEnd: suggestion.endTime,
+            newISF: suggestion.suggestedISF
+        )
+        pumpManager.applyMergedISFSchedule(items: merged) { [weak self] error in
+            if let error = error {
+                self?.log.error("Failed to apply ISF suggestion: %{public}@", error.localizedDescription)
+            } else {
+                self?.log.default("ISF suggestion applied successfully")
+            }
+        }
     }
 
     func applyICRSuggestion(_ suggestion: ICRSuggestion) {
         log.default("Applying ICR suggestion: %.0f g/U for time block %@",
                     suggestion.suggestedICR, suggestion.timeBlock.displayName)
+
+        guard let current = cachedICREntries, !current.isEmpty else {
+            log.error("No current ICR schedule available — refresh regression report first")
+            return
+        }
+        let merged = ScheduleMerger.mergeICR(
+            current: current,
+            suggestionStart: suggestion.startTime,
+            suggestionEnd: suggestion.endTime,
+            newICR: suggestion.suggestedICR
+        )
+        pumpManager.applyMergedCarbRatioSchedule(items: merged) { [weak self] error in
+            if let error = error {
+                self?.log.error("Failed to apply ICR suggestion: %{public}@", error.localizedDescription)
+            } else {
+                self?.log.default("ICR suggestion applied successfully")
+            }
+        }
     }
 
     func applyAllSuggestions(report: RegressionReport) {

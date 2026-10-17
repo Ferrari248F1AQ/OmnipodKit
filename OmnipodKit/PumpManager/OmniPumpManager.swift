@@ -3432,6 +3432,71 @@ extension OmniPumpManager: PumpManager {
         }
     }
 
+    // MARK: - Regression Apply
+
+    public func currentBasalScheduleItems() -> [RepeatingScheduleValue<Double>] {
+        return state.basalSchedule.entries.map {
+            RepeatingScheduleValue(startTime: $0.startTime, value: $0.rate)
+        }
+    }
+
+    public func currentISFScheduleItems() -> [RepeatingScheduleValue<Double>]? {
+        return state.podState?.correctionFactorSchedule?.map {
+            RepeatingScheduleValue(startTime: $0.startTime, value: $0.value)
+        }
+    }
+
+    public func applyMergedBasalSchedule(items: [RepeatingScheduleValue<Double>], completion: @escaping (Error?) -> Void) {
+        let newSchedule = BasalSchedule(repeatingScheduleValues: items, podType: state.podType)
+        setBasalSchedule(newSchedule) { [weak self] error in
+            guard let self = self else { return }
+            if let error = error {
+                completion(error)
+            } else {
+                if let loopSchedule = BasalRateSchedule(dailyItems: items, timeZone: self.state.timeZone) {
+                    self.pumpDelegate.notify { delegate in
+                        delegate?.pumpManager(self, didRequestBasalRateScheduleChange: loopSchedule) { _ in }
+                    }
+                }
+                completion(nil)
+            }
+        }
+    }
+
+    public func applyMergedISFSchedule(items: [RepeatingScheduleValue<Double>], completion: @escaping (Error?) -> Void) {
+        guard let schedule = InsulinSensitivitySchedule(
+            unit: .milligramsPerDeciliter,
+            dailyItems: items,
+            timeZone: state.timeZone
+        ) else {
+            completion(OmniPumpManagerError.invalidSetting)
+            return
+        }
+        pumpDelegate.notify { [weak self] delegate in
+            guard let self = self else { return }
+            delegate?.pumpManager(self, didRequestInsulinSensitivityScheduleChange: schedule) { error in
+                completion(error)
+            }
+        }
+    }
+
+    public func applyMergedCarbRatioSchedule(items: [RepeatingScheduleValue<Double>], completion: @escaping (Error?) -> Void) {
+        guard let schedule = CarbRatioSchedule(
+            unit: .gram(),
+            dailyItems: items,
+            timeZone: state.timeZone
+        ) else {
+            completion(OmniPumpManagerError.invalidSetting)
+            return
+        }
+        pumpDelegate.notify { [weak self] delegate in
+            guard let self = self else { return }
+            delegate?.pumpManager(self, didRequestCarbRatioScheduleChange: schedule) { error in
+                completion(error)
+            }
+        }
+    }
+
     public func syncDeliveryLimits(limits deliveryLimits: DeliveryLimits, completion: @escaping (Result<DeliveryLimits, Error>) -> Void) {
         setState { state in
             if let maxBasalRate = deliveryLimits.maximumBasalRate?.doubleValue(for: .internationalUnitsPerHour),

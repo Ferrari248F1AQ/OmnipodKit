@@ -12,6 +12,7 @@
 //
 
 import Foundation
+import LoopKit
 
 // MARK: - Input Data Models
 
@@ -155,6 +156,53 @@ struct TimeBlock {
 
     var label: String {
         String(format: "%02d:00-%02d:00", startHour, endHour)
+    }
+}
+
+// MARK: - Schedule Merge Utility
+
+enum ScheduleMerger {
+
+    static func mergeBasal(
+        current: [RepeatingScheduleValue<Double>],
+        suggestionStart: TimeInterval,
+        suggestionEnd: TimeInterval,
+        newRate: Double
+    ) -> [RepeatingScheduleValue<Double>] {
+        merge(current: current, start: suggestionStart, end: suggestionEnd, newValue: newRate)
+    }
+
+    static func mergeISF(
+        current: [RepeatingScheduleValue<Double>],
+        suggestionStart: TimeInterval,
+        suggestionEnd: TimeInterval,
+        newISF: Double
+    ) -> [RepeatingScheduleValue<Double>] {
+        merge(current: current, start: suggestionStart, end: suggestionEnd, newValue: newISF)
+    }
+
+    static func mergeICR(
+        current: [RepeatingScheduleValue<Double>],
+        suggestionStart: TimeInterval,
+        suggestionEnd: TimeInterval,
+        newICR: Double
+    ) -> [RepeatingScheduleValue<Double>] {
+        merge(current: current, start: suggestionStart, end: suggestionEnd, newValue: newICR)
+    }
+
+    private static func merge(
+        current: [RepeatingScheduleValue<Double>],
+        start: TimeInterval,
+        end: TimeInterval,
+        newValue: Double
+    ) -> [RepeatingScheduleValue<Double>] {
+        guard !current.isEmpty else { return current }
+        return current.map { entry in
+            if entry.startTime >= start && entry.startTime < end {
+                return RepeatingScheduleValue(startTime: entry.startTime, value: newValue)
+            }
+            return entry
+        }
     }
 }
 
