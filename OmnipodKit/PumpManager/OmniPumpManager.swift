@@ -1751,8 +1751,9 @@ extension OmniPumpManager {
             blePodComms.blePairAndSetupPod(timeZone: .currentFixed, insulinType: insulinType, therapyConfig: therapyConfig, messageLogger: self) { (result) in
                 switch result {
                 case .success:
-                    if self.o5CgmSensorConfig != nil {
+                    if let cgmConfig = self.o5CgmSensorConfig {
                         self.o5NudgeController.isCgmSensorRegistered = true
+                        self.o5NudgeController.registeredSensorType = cgmConfig.sensorType
                     }
                     primeSession(result)
                 case .failure(let error):
@@ -2863,7 +2864,7 @@ extension OmniPumpManager: PumpManager {
     public func configureCgmForExternalAlgorithm(cgmIdentifier: String, transmitterId: String) {
         guard state.podType.isO5, !transmitterId.isEmpty else { return }
 
-        // Skip if already configured with the same sensor
+        // Skip if already configured with the same transmitter
         if let existing = o5CgmSensorConfig, existing.transmitterId == transmitterId {
             return
         }
@@ -2878,6 +2879,16 @@ extension OmniPumpManager: PumpManager {
             sensorType = .libre2
         default:
             log.info("Unknown CGM identifier '%{public}@' for O5 sensor config", cgmIdentifier)
+            return
+        }
+
+        // Block sensor MODEL changes mid-pod (official: one model per pod wear).
+        // Transmitter changes within the same model are allowed.
+        if let existing = o5CgmSensorConfig,
+           o5NudgeController.isCgmSensorRegistered,
+           existing.sensorType != sensorType {
+            log.error("Cannot switch CGM model from %{public}@ to %{public}@ on active pod — requires new pod",
+                      existing.sensorType.displayName, sensorType.displayName)
             return
         }
 

@@ -79,7 +79,9 @@ class O5NudgeController {
     private(set) var missingEgvCount: Int = 0
 
     /// Threshold before entering Automated Limited Mode.
-    static let missingEgvLimitedModeThreshold = 12
+    /// Official Omnipod 5: Limited Mode after 20 minutes without CGM data.
+    /// At ~5 min per nudge cycle, 4 consecutive misses ≈ 20 minutes.
+    static let missingEgvLimitedModeThreshold = 4
 
     /// Minimum interval between TDI recalculations (1 hour).
     static let tdiRecalculationInterval: TimeInterval = 3600
@@ -107,15 +109,20 @@ class O5NudgeController {
         registerCgmSensorIfNeeded(transport: transport)
 
         // 1. Send CGM update if we have a new reading
-        let cgmSent = try nudgeCgm(transport: transport)
+        let cgmResult = try nudgeCgm(transport: transport)
 
         // 2. Track missing EGV and manage Automated Limited Mode
-        if !cgmSent {
+        //    Only count truly missing data (.noData), not timing skips where
+        //    the CGM simply hasn't produced a new reading yet.
+        switch cgmResult {
+        case .noData:
             missingEgvCount += 1
             if missingEgvCount >= O5NudgeController.missingEgvLimitedModeThreshold {
                 try enterLimitedMode(transport: transport)
             }
-        } else {
+        case .timingSkip:
+            break  // CGM data exists, just not new — don't count as missing
+        case .sent:
             if missingEgvCount >= O5NudgeController.missingEgvLimitedModeThreshold {
                 try exitLimitedMode(transport: transport)
             }
@@ -143,16 +150,28 @@ class O5NudgeController {
 
     // MARK: - Late CGM Registration
 
-    /// Transmitter ID of the last successfully registered sensor (to detect CGM changes).
+    /// Transmitter ID of the last successfully registered sensor (to detect transmitter changes).
     private var registeredTransmitterId: String?
 
+    /// Sensor MODEL registered with this pod. Per official Omnipod 5 docs, each pod can only
+    /// connect to one model of sensor during its wear — transmitter changes within the same
+    /// model are allowed, but switching models (e.g. G6→G7) requires a new pod.
+    var registeredSensorType: O5CgmType?
+
     /// Registers CGM sensor with an already-active pod if config became available after activation,
-    /// or if the sensor changed (e.g. G6→G7 swap).
+    /// or if the transmitter changed within the same sensor model.
     private func registerCgmSensorIfNeeded(transport: BlePodMessageTransport) {
         guard let config = dataSource?.cgmSensorConfig() else { return }
 
-        // Skip if already registered with the same sensor
+        // Skip if already registered with the same transmitter
         if isCgmSensorRegistered, registeredTransmitterId == config.transmitterId {
+            return
+        }
+
+        // Block sensor MODEL changes mid-pod (official: one model per pod wear)
+        if let registeredType = registeredSensorType, registeredType != config.sensorType {
+            log.error("Cannot switch CGM model from %{public}@ to %{public}@ on active pod — requires new pod",
+                      registeredType.displayName, config.sensorType.displayName)
             return
         }
 
@@ -160,10 +179,11 @@ class O5NudgeController {
             try cgmPairingManager.registerSensor(config: config, transport: transport)
             isCgmSensorRegistered = true
             registeredTransmitterId = config.transmitterId
-            log.default("Late CGM sensor registration successful: %{public}@, txId=%{public}@",
+            registeredSensorType = config.sensorType
+            log.default("CGM sensor registration successful: %{public}@, txId=%{public}@",
                         config.sensorType.displayName, config.transmitterId ?? "nil")
         } catch {
-            log.error("Late CGM sensor registration failed (will retry next nudge): %{public}@", String(describing: error))
+            log.error("CGM sensor registration failed (will retry next nudge): %{public}@", String(describing: error))
         }
     }
 
@@ -171,24 +191,32 @@ class O5NudgeController {
     func resetCgmRegistration() {
         isCgmSensorRegistered = false
         registeredTransmitterId = nil
+        registeredSensorType = nil
     }
 
     // MARK: - CGM Nudge
 
+    /// Result of a CGM nudge attempt.
+    enum CgmNudgeResult {
+        case sent          // New EGV successfully sent to pod
+        case timingSkip    // Valid CGM data exists, but was already sent recently
+        case noData        // No CGM data available at all
+    }
+
     /// Sends the latest CGM value to the pod via EgvCommand.
-    /// - Returns: true if a new EGV was sent, false if no data or skipped.
     @discardableResult
-    private func nudgeCgm(transport: BlePodMessageTransport) throws -> Bool {
+    private func nudgeCgm(transport: BlePodMessageTransport) throws -> CgmNudgeResult {
         guard let dataSource = dataSource,
               let (mgdl, date) = dataSource.latestGlucose() else {
             log.default("No CGM data available for nudge")
-            return false
+            return .noData
         }
 
-        // Skip if we already sent this reading
+        // Skip if we already sent this reading — this is NOT missing data,
+        // the CGM just hasn't produced a new value yet.
         if let lastDate = lastEgvSentDate,
            date.timeIntervalSince(lastDate) < O5NudgeController.cgmNudgeInterval {
-            return false
+            return .timingSkip
         }
 
         let egvString = String(mgdl)
@@ -203,7 +231,7 @@ class O5NudgeController {
         // Update CGM pairing manager state
         cgmPairingManager.updateCgmState(from: mgdl)
 
-        return true
+        return .sent
     }
 
     // MARK: - CGM History Burst
