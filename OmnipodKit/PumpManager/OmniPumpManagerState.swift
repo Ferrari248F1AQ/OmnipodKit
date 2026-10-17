@@ -49,6 +49,9 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
         podState?.glucoseTargetSchedule = glucoseTargets
     }
 
+    /// ICR schedule forwarded from Loop for regression analysis: (startTime, gramsPerUnit)
+    var carbRatioScheduleForRegression: [(startTime: TimeInterval, gramsPerUnit: Double)] = []
+
     mutating func updateO5LatestGlucose(mgdl: Int, date: Date) {
         podState?.latestGlucoseMgdl = mgdl
         podState?.latestGlucoseDate = date
@@ -448,6 +451,14 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
             self.carbHistoryForRegression = carbRegRaw.compactMap { CarbHistoryEntry(rawValue: $0) }
         }
 
+        if let icrRaw = rawValue["carbRatioScheduleForRegression"] as? [[String: Any]] {
+            self.carbRatioScheduleForRegression = icrRaw.compactMap { dict in
+                guard let startTime = dict["startTime"] as? TimeInterval,
+                      let gramsPerUnit = dict["gramsPerUnit"] as? Double else { return nil }
+                return (startTime: startTime, gramsPerUnit: gramsPerUnit)
+            }
+        }
+
         if podType.isEros {
             // Some more Eros specific values
             if let pairingAttemptAddress = rawValue["pairingAttemptAddress"] as? UInt32 {
@@ -502,6 +513,11 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
         }
         if !carbHistoryForRegression.isEmpty {
             value["carbHistoryForRegression"] = carbHistoryForRegression.map { $0.rawValue }
+        }
+        if !carbRatioScheduleForRegression.isEmpty {
+            value["carbRatioScheduleForRegression"] = carbRatioScheduleForRegression.map {
+                ["startTime": $0.startTime, "gramsPerUnit": $0.gramsPerUnit] as [String: Any]
+            }
         }
 
         return value

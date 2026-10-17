@@ -2861,6 +2861,14 @@ extension OmniPumpManager: PumpManager {
         }
     }
 
+    public func updateCarbRatioScheduleForExternalAlgorithm(carbRatios: [(TimeInterval, Double)]) {
+        setState { state in
+            state.carbRatioScheduleForRegression = carbRatios.map {
+                (startTime: $0.0, gramsPerUnit: $0.1)
+            }
+        }
+    }
+
     public func recordCarbEntryForExternalAlgorithm(date: Date, grams: Double, absorptionTime: TimeInterval) {
         recordCarbEntry(date: date, grams: grams, absorptionTime: absorptionTime)
     }

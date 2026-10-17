@@ -607,7 +607,10 @@ class OmniSettingsViewModel: ObservableObject {
             (startTime: $0.startTime, mgdlPerUnit: $0.value)
         } ?? [(startTime: 0, mgdlPerUnit: 50.0)]
 
-        let icrSchedule: [(startTime: TimeInterval, gramsPerUnit: Double)] = [(startTime: 0, gramsPerUnit: 10.0)]
+        let storedICR = pumpManager.state.carbRatioScheduleForRegression
+        let icrSchedule: [(startTime: TimeInterval, gramsPerUnit: Double)] = storedICR.isEmpty
+            ? [(startTime: 0, gramsPerUnit: 10.0)]
+            : storedICR
 
         cachedICREntries = icrSchedule.map {
             RepeatingScheduleValue(startTime: $0.startTime, value: $0.gramsPerUnit)
