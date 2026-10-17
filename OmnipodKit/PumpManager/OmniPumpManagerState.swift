@@ -94,6 +94,13 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
     /// Entries are appended as doses are stored and pruned to the window.
     internal var recentInsulinHistory: [InsulinHistoryEntry] = []
 
+    /// Pending loop state command to send to the pod on the next BLE session.
+    /// Set when the algorithm mode changes; consumed by handlePodUpdatesAsNeeded().
+    internal var pendingO5LoopState: Int?
+
+    /// User's preferred O5 algorithm mode, persisted across pod changes.
+    internal var preferredO5AlgorithmMode: O5AlgorithmMode = .loopAlgorithm
+
     // Indicates that the user has completed initial configuration
     // which means they have configured any parameters, but may not have paired a pod yet.
     var initialConfigurationCompleted: Bool = false
@@ -399,6 +406,13 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
             self.recentInsulinHistory = historyRaw.compactMap { InsulinHistoryEntry(rawValue: $0) }
         }
 
+        self.pendingO5LoopState = rawValue["pendingO5LoopState"] as? Int
+
+        if let modeRaw = rawValue["preferredO5AlgorithmMode"] as? String,
+           let mode = O5AlgorithmMode(rawValue: modeRaw) {
+            self.preferredO5AlgorithmMode = mode
+        }
+
         if podType.isEros {
             // Some more Eros specific values
             if let pairingAttemptAddress = rawValue["pairingAttemptAddress"] as? UInt32 {
@@ -443,6 +457,8 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
         if !recentInsulinHistory.isEmpty {
             value["recentInsulinHistory"] = recentInsulinHistory.map { $0.rawValue }
         }
+        value["pendingO5LoopState"] = pendingO5LoopState
+        value["preferredO5AlgorithmMode"] = preferredO5AlgorithmMode.rawValue
 
         return value
     }

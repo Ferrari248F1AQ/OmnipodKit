@@ -304,6 +304,16 @@ public class OmniPumpManager: RileyLinkPumpManager {
                     delegate?.pumpManager(self, hasNewPumpEvents: [event], lastReconciliation: self.lastSync, replacePendingEvents: false) { _ in }
                     delegate?.deviceManager(self, recordAnalyticsEvent: "Pod Paired", properties: ["podType": podType.briefName])
                 }
+
+                // O5: restore preferred algorithm mode on new pod activation.
+                // The user's preference persists across pod changes, so if they chose Insulet AID
+                // we queue S3.13 to activate it on the new pod at the first nudge cycle.
+                if newValue.podType.isO5 && newValue.preferredO5AlgorithmMode == .insuletAID {
+                    self.setState { state in
+                        state.updateO5AlgorithmMode(.insuletAID)
+                        state.pendingO5LoopState = O5LoopStateValue.closedLoop.rawValue
+                    }
+                }
             }
         }
 
@@ -1352,31 +1362,57 @@ extension OmniPumpManager {
     func buildTherapyConfigFromCurrentSettings() -> O5TherapyConfig? {
         guard state.podType.isO5 else { return nil }
 
-        // Convert the basal schedule into a rough TDI estimate
-        let basalSchedule = state.basalSchedule
-        let entries = basalSchedule.entries
-        let totalBasalPerDay = entries.enumerated().reduce(0.0, { total, pair in
-            let (index, entry) = pair
-            let nextStart = index + 1 < entries.count ? entries[index + 1].startTime : TimeInterval(hours: 24)
-            let duration = nextStart - entry.startTime
-            return total + entry.rate * (duration / 3600.0)
-        })
-        // Approximate TDI: basal is typically ~50% of total daily insulin
-        let estimatedTDI = totalBasalPerDay * 2.0
-
+        // Use O5TdiCalculator with full 14-day history when available
         let history = state.recentInsulinHistory
+        var calculatedTDI: Double?
+        if !history.isEmpty {
+            let windowStart = Date().addingTimeInterval(-14 * 86400)
+            let doseEntries = history
+                .filter { $0.timestamp >= windowStart }
+                .map { entry in
+                    (startDate: entry.timestamp,
+                     endDate: entry.timestamp.addingTimeInterval(1),
+                     deliveredUnits: entry.units,
+                     isBasal: false)
+                }
+            let tdiResult = O5TdiCalculator.calculateTDI(from: doseEntries)
+            calculatedTDI = Double(tdiResult.tdiValue)
+        }
+
+        // Fallback: estimate TDI from basal schedule (basal ≈ 50% of total)
+        if calculatedTDI == nil {
+            let basalSchedule = state.basalSchedule
+            let entries = basalSchedule.entries
+            let totalBasalPerDay = entries.enumerated().reduce(0.0, { total, pair in
+                let (index, entry) = pair
+                let nextStart = index + 1 < entries.count ? entries[index + 1].startTime : TimeInterval(hours: 24)
+                let duration = nextStart - entry.startTime
+                return total + entry.rate * (duration / 3600.0)
+            })
+            calculatedTDI = totalBasalPerDay * 2.0
+        }
+
+        // Carry over glucose targets from previous pod if available
+        let glucoseTargets: [(startTime: TimeInterval, lowerBound: Double, upperBound: Double)]? = {
+            let schedule = state.podState?.glucoseTargetSchedule
+                ?? state.previousPodState?.glucoseTargetSchedule
+            return schedule?.map { (startTime: $0.startTime, lowerBound: $0.value, upperBound: $0.value) }
+        }()
+
         if !history.isEmpty {
             let recentDoses = history.map { entry in
                 (timestamp: entry.timestamp, units: entry.units, isMeal: entry.isMeal)
             }
             return O5TherapyConfigBuilder.buildWithDoseHistory(
-                totalDailyInsulin: estimatedTDI > 0 ? estimatedTDI : nil,
+                glucoseTargetRangeSchedule: glucoseTargets,
+                totalDailyInsulin: calculatedTDI,
                 recentDoses: recentDoses
             )
         }
 
         return O5TherapyConfigBuilder.build(
-            totalDailyInsulin: estimatedTDI > 0 ? estimatedTDI : nil
+            glucoseTargetRangeSchedule: glucoseTargets,
+            totalDailyInsulin: calculatedTDI
         )
     }
 
@@ -1427,8 +1463,74 @@ extension OmniPumpManager {
             }
         }
 
+        // SAFETY: When switching AID→Loop, reconcile the pod's IOB into Loop's DoseStore.
+        // Without this, Loop doesn't know about insulin the pod's AID delivered and may
+        // double-dose by issuing corrections on top of already-active AID insulin.
+        let previousMode = o5AlgorithmMode
+        if previousMode == .insuletAID && mode == .loopAlgorithm {
+            reconcileAidInsulionOnBoard()
+        }
+
+        let targetLoopState: O5LoopStateValue = (mode == .insuletAID) ? .closedLoop : .inactive
+
         setState { state in
             state.updateO5AlgorithmMode(mode)
+            state.preferredO5AlgorithmMode = mode
+            state.pendingO5LoopState = targetLoopState.rawValue
+        }
+    }
+
+    /// Injects the pod's AID-delivered IOB as a phantom dose into Loop's DoseStore so that
+    /// Loop's insulin model accounts for it and avoids double-dosing.
+    private func reconcileAidInsulionOnBoard() {
+        guard let aidStatus = state.podState?.o5AidStatus,
+              let iob = aidStatus.iobUnits,
+              iob > 0 else {
+            log.info("AID→Loop switch: no AID IOB to reconcile (iob=%{public}@)",
+                     String(describing: state.podState?.o5AidStatus?.iobUnits))
+            return
+        }
+
+        let now = Date()
+        let syncId = "o5-aid-reconcile-\(now.timeIntervalSinceReferenceDate)"
+
+        // Model the AID IOB as an automatic bolus that just finished, so Loop's DIA curve
+        // decays it naturally. Using .bolus + automatic=true makes Loop treat it as algo-driven.
+        let dose = DoseEntry(
+            type: .bolus,
+            startDate: now,
+            endDate: now,
+            value: iob,
+            unit: .units,
+            deliveredUnits: iob,
+            description: "O5 AID IOB reconciliation on algorithm switch",
+            syncIdentifier: syncId,
+            insulinType: nil,
+            automatic: true,
+            manuallyEntered: false,
+            isMutable: false,
+            wasProgrammedByPumpUI: false
+        )
+
+        let event = NewPumpEvent(
+            date: now,
+            dose: dose,
+            raw: syncId.data(using: .utf8)!,
+            title: "O5 AID→Loop IOB Reconciliation"
+        )
+
+        log.default("AID→Loop IOB reconciliation: injecting %.3f U into DoseStore (syncId: %{public}@)",
+                     iob, syncId)
+
+        pumpDelegate.notify { delegate in
+            delegate?.pumpManager(self, hasNewPumpEvents: [event],
+                                  lastReconciliation: self.lastSync,
+                                  replacePendingEvents: false) { error in
+                if let error = error {
+                    self.log.error("Failed to store AID IOB reconciliation dose: %{public}@",
+                                   String(describing: error))
+                }
+            }
         }
     }
 
@@ -1468,6 +1570,47 @@ extension OmniPumpManager {
             // CRITICAL: Save transport state even on error to prevent nonce desync.
             // The nonce may have been incremented during the failed command exchange,
             // so we must persist it to avoid the pod becoming unreachable.
+            setState { state in
+                state.updateO5BleTransportState(BleMessageTransportState(
+                    ck: transport.ck,
+                    noncePrefix: transport.noncePrefix,
+                    msgSeq: transport.msgSeq,
+                    nonceSeq: transport.nonceSeq,
+                    messageNumber: transport.messageNumber
+                ))
+            }
+        }
+    }
+
+    /// Sends the pending S3.13 loop state command to the pod and clears the flag.
+    private func sendPendingLoopState(_ loopState: O5LoopStateValue, blePodComms: BlePodComms) {
+        guard let podState = state.podState,
+              let manager = blePodComms.manager else { return }
+
+        let transport = BlePodMessageTransport(
+            manager: manager,
+            myId: state.controllerId,
+            podId: state.podId,
+            state: podState.bleMessageTransportState,
+            signingKey: podState.signingKey
+        )
+        transport.messageLogger = self
+
+        do {
+            try o5NudgeController.setLoopState(loopState, transport: transport)
+            log.default("Sent S3.13 loop state: %d", loopState.rawValue)
+            setState { state in
+                state.pendingO5LoopState = nil
+                state.updateO5BleTransportState(BleMessageTransportState(
+                    ck: transport.ck,
+                    noncePrefix: transport.noncePrefix,
+                    msgSeq: transport.msgSeq,
+                    nonceSeq: transport.nonceSeq,
+                    messageNumber: transport.messageNumber
+                ))
+            }
+        } catch {
+            log.error("Failed to send S3.13 loop state: %{public}@", String(describing: error))
             setState { state in
                 state.updateO5BleTransportState(BleMessageTransportState(
                     ck: transport.ck,
@@ -1903,6 +2046,13 @@ extension OmniPumpManager {
             session.dosesForStorage() { (doses) -> Bool in
                 return store(doses: doses, in: session)
             }
+        }
+
+        // O5: send any pending loop state command (S3.13) to the pod
+        if let pendingRaw = state.pendingO5LoopState,
+           let pendingState = O5LoopStateValue(rawValue: pendingRaw),
+           let blePodComms = self.podComms as? BlePodComms {
+            sendPendingLoopState(pendingState, blePodComms: blePodComms)
         }
 
         // O5 AID nudge cycle: send CGM, TDI, correction factors, read AID status
@@ -3549,12 +3699,23 @@ extension OmniPumpManager: PumpManager {
     private func appendToInsulinHistory(doses: [UnfinalizedDose]) {
         let cutoff = Date().addingTimeInterval(-14 * 24 * 3600) // 14-day window
         let newEntries = doses.compactMap { dose -> InsulinHistoryEntry? in
-            guard dose.doseType == .bolus, dose.units > 0 else { return nil }
-            return InsulinHistoryEntry(
-                timestamp: dose.startTime,
-                units: dose.units,
-                isMeal: !dose.automatic
-            )
+            guard dose.units > 0 else { return nil }
+            switch dose.doseType {
+            case .bolus:
+                return InsulinHistoryEntry(
+                    timestamp: dose.startTime,
+                    units: dose.units,
+                    isMeal: !dose.automatic
+                )
+            case .tempBasal:
+                return InsulinHistoryEntry(
+                    timestamp: dose.startTime,
+                    units: dose.units,
+                    isMeal: false
+                )
+            default:
+                return nil
+            }
         }
         guard !newEntries.isEmpty else { return }
         setState { state in
@@ -3775,28 +3936,40 @@ extension OmniPumpManager: O5NudgeDataSource {
     }
 
     func recentDoseHistory(since: Date) -> [(startDate: Date, endDate: Date, deliveredUnits: Double, isBasal: Bool)] {
-        guard let podState = state.podState else { return [] }
         var doses: [(startDate: Date, endDate: Date, deliveredUnits: Double, isBasal: Bool)] = []
         let now = Date()
 
-        if let tempBasal = podState.unfinalizedTempBasal,
-           (tempBasal.finishTime ?? now) > since {
+        // Include persisted insulin history (survives pod changes, covers 14 days)
+        for entry in state.recentInsulinHistory where entry.timestamp >= since {
             doses.append((
-                startDate: tempBasal.startTime,
-                endDate: tempBasal.finishTime ?? now,
-                deliveredUnits: tempBasal.units,
-                isBasal: true
+                startDate: entry.timestamp,
+                endDate: entry.timestamp.addingTimeInterval(1),
+                deliveredUnits: entry.units,
+                isBasal: false
             ))
         }
 
-        if let bolus = podState.unfinalizedBolus,
-           (bolus.finishTime ?? now) > since {
-            doses.append((
-                startDate: bolus.startTime,
-                endDate: bolus.finishTime ?? now,
-                deliveredUnits: bolus.units,
-                isBasal: false
-            ))
+        // Include current pod's in-flight deliveries
+        if let podState = state.podState {
+            if let tempBasal = podState.unfinalizedTempBasal,
+               (tempBasal.finishTime ?? now) > since {
+                doses.append((
+                    startDate: tempBasal.startTime,
+                    endDate: tempBasal.finishTime ?? now,
+                    deliveredUnits: tempBasal.units,
+                    isBasal: true
+                ))
+            }
+
+            if let bolus = podState.unfinalizedBolus,
+               (bolus.finishTime ?? now) > since {
+                doses.append((
+                    startDate: bolus.startTime,
+                    endDate: bolus.finishTime ?? now,
+                    deliveredUnits: bolus.units,
+                    isBasal: false
+                ))
+            }
         }
 
         return doses
