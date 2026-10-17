@@ -231,6 +231,7 @@ struct O5SmartRegression {
         let icrSuggestions = analyzeICR(
             blocks: blocks,
             currentSchedule: currentICRSchedule,
+            currentISFSchedule: currentISFSchedule,
             dataQuality: dataQuality
         )
 
@@ -511,6 +512,7 @@ struct O5SmartRegression {
     private static func analyzeICR(
         blocks: [TimeBlock],
         currentSchedule: [(startTime: TimeInterval, gramsPerUnit: Double)],
+        currentISFSchedule: [(startTime: TimeInterval, mgdlPerUnit: Double)],
         dataQuality: RegressionReport.DataQuality
     ) -> [ICRSuggestion] {
 
@@ -553,7 +555,7 @@ struct O5SmartRegression {
                 let blockStartSeconds = TimeInterval(block.startHour * 3600)
                 let currentISFForBlock = findScheduleValue(
                     at: blockStartSeconds,
-                    in: [(0, 50.0)] // fallback, should use actual ISF
+                    in: currentISFSchedule.map { ($0.startTime, $0.mgdlPerUnit) }
                 )
 
                 let idealBolus = bolus.units + (bgDelta / max(currentISFForBlock, 10))
