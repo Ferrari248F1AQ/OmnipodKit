@@ -1364,8 +1364,17 @@ extension OmniPumpManager {
         // Approximate TDI: basal is typically ~50% of total daily insulin
         let estimatedTDI = totalBasalPerDay * 2.0
 
-        // For O5, use a flat 110 target as default (Loop's target schedule
-        // will be applied via nudge updates once the pod is running)
+        let history = state.recentInsulinHistory
+        if !history.isEmpty {
+            let recentDoses = history.map { entry in
+                (timestamp: entry.timestamp, units: entry.units, isMeal: entry.isMeal)
+            }
+            return O5TherapyConfigBuilder.buildWithDoseHistory(
+                totalDailyInsulin: estimatedTDI > 0 ? estimatedTDI : nil,
+                recentDoses: recentDoses
+            )
+        }
+
         return O5TherapyConfigBuilder.build(
             totalDailyInsulin: estimatedTDI > 0 ? estimatedTDI : nil
         )
@@ -3537,7 +3546,26 @@ extension OmniPumpManager: PumpManager {
         return success
     }
 
+    private func appendToInsulinHistory(doses: [UnfinalizedDose]) {
+        let cutoff = Date().addingTimeInterval(-36 * 3600) // 36-hour window
+        let newEntries = doses.compactMap { dose -> InsulinHistoryEntry? in
+            guard dose.doseType == .bolus, dose.units > 0 else { return nil }
+            return InsulinHistoryEntry(
+                timestamp: dose.startTime,
+                units: dose.units,
+                isMeal: !dose.automatic
+            )
+        }
+        guard !newEntries.isEmpty else { return }
+        setState { state in
+            state.recentInsulinHistory.append(contentsOf: newEntries)
+            state.recentInsulinHistory.removeAll { $0.timestamp < cutoff }
+        }
+    }
+
     func store(doses: [UnfinalizedDose], completion: @escaping (_ error: Error?) -> Void) {
+        appendToInsulinHistory(doses: doses)
+
         let lastSync = self.lastSync
 
         pumpDelegate.notify { (delegate) in

@@ -90,6 +90,10 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
     // for user review and manufacturer reporting.
     internal var previousPodState: PodState?
 
+    /// Rolling 36-hour insulin delivery history for pod-to-pod transfer.
+    /// Entries are appended as doses are stored and pruned to the window.
+    internal var recentInsulinHistory: [InsulinHistoryEntry] = []
+
     // Indicates that the user has completed initial configuration
     // which means they have configured any parameters, but may not have paired a pod yet.
     var initialConfigurationCompleted: Bool = false
@@ -391,6 +395,10 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
             self.previousPodState = nil
         }
 
+        if let historyRaw = rawValue["recentInsulinHistory"] as? [[String: Any]] {
+            self.recentInsulinHistory = historyRaw.compactMap { InsulinHistoryEntry(rawValue: $0) }
+        }
+
         if podType.isEros {
             // Some more Eros specific values
             if let pairingAttemptAddress = rawValue["pairingAttemptAddress"] as? UInt32 {
@@ -432,6 +440,9 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
         value["lastPumpDataReportDate"] = lastPumpDataReportDate
         value["silencePodEnd"] = silencePodEnd
         value["previousPodState"] = previousPodState?.rawValue
+        if !recentInsulinHistory.isEmpty {
+            value["recentInsulinHistory"] = recentInsulinHistory.map { $0.rawValue }
+        }
 
         return value
     }
@@ -514,5 +525,36 @@ extension OmniPumpManagerState: CustomDebugStringConvertible {
             "",
         ].joined(separator: "\n")
         return retVal
+    }
+}
+
+/// Lightweight record of an insulin delivery event for pod-to-pod history transfer.
+struct InsulinHistoryEntry: Codable, Equatable {
+    let timestamp: Date
+    let units: Double
+    let isMeal: Bool
+
+    var rawValue: [String: Any] {
+        return [
+            "timestamp": timestamp.timeIntervalSinceReferenceDate,
+            "units": units,
+            "isMeal": isMeal,
+        ]
+    }
+
+    init(timestamp: Date, units: Double, isMeal: Bool) {
+        self.timestamp = timestamp
+        self.units = units
+        self.isMeal = isMeal
+    }
+
+    init?(rawValue: [String: Any]) {
+        guard let ts = rawValue["timestamp"] as? TimeInterval,
+              let units = rawValue["units"] as? Double else {
+            return nil
+        }
+        self.timestamp = Date(timeIntervalSinceReferenceDate: ts)
+        self.units = units
+        self.isMeal = rawValue["isMeal"] as? Bool ?? false
     }
 }
