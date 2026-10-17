@@ -90,7 +90,7 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
     // for user review and manufacturer reporting.
     internal var previousPodState: PodState?
 
-    /// Rolling 36-hour insulin delivery history for pod-to-pod transfer.
+    /// Rolling 14-day insulin delivery history for pod-to-pod transfer.
     /// Entries are appended as doses are stored and pruned to the window.
     internal var recentInsulinHistory: [InsulinHistoryEntry] = []
 

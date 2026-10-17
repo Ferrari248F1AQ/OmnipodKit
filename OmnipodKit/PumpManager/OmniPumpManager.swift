@@ -3547,7 +3547,7 @@ extension OmniPumpManager: PumpManager {
     }
 
     private func appendToInsulinHistory(doses: [UnfinalizedDose]) {
-        let cutoff = Date().addingTimeInterval(-36 * 3600) // 36-hour window
+        let cutoff = Date().addingTimeInterval(-14 * 24 * 3600) // 14-day window
         let newEntries = doses.compactMap { dose -> InsulinHistoryEntry? in
             guard dose.doseType == .bolus, dose.units > 0 else { return nil }
             return InsulinHistoryEntry(

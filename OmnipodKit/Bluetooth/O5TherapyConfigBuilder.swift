@@ -78,8 +78,8 @@ struct O5TherapyConfigBuilder {
     ///   - glucoseTargetRangeSchedule: Same as build()
     ///   - insulinModelDuration: Same as build()
     ///   - totalDailyInsulin: Same as build()
-    ///   - recentDoses: Array of (timestamp, units, type) representing recent insulin deliveries.
-    ///     These are converted to the 7-byte record format expected by the O5 algorithm.
+    ///   - recentDoses: Up to 14 days of (timestamp, units, isMeal) representing insulin deliveries.
+    ///     These are bucketed into 72 records (~4h 40m each) in the 7-byte format the O5 algorithm expects.
     /// - Returns: O5TherapyConfig with populated insulin history.
     static func buildWithDoseHistory(
         glucoseTargetRangeSchedule: [(startTime: TimeInterval, lowerBound: Double, upperBound: Double)]? = nil,
@@ -104,36 +104,35 @@ struct O5TherapyConfigBuilder {
 
     // MARK: - Insulin History Encoding
 
-    /// Encodes recent dose history into 3 batches of 24 records (7 bytes each).
+    /// 14 days of history across 72 records: each record covers ~4.67 hours.
+    static let historyWindowSeconds: TimeInterval = 14 * 24 * 3600 // 14 days
+    static let totalRecords = 72 // 3 batches × 24 records
+    static let secondsPerRecord: TimeInterval = historyWindowSeconds / Double(totalRecords) // ~16800s ≈ 4h 40m
+
+    /// Encodes 14 days of dose history into 3 batches of 24 records (7 bytes each).
     ///
-    /// Record format (7 bytes, from RE analysis):
-    ///   Byte 0-3: recordTimestampInSeconds (UInt32 BE, seconds since pod activation)
-    ///   Byte 4:   sumUserBolusCorrection (UInt8, in 0.05U pulses)
-    ///   Byte 5:   sumUserBolusMeal (UInt8, in 0.05U pulses)
-    ///   Byte 6:   sumAlgorithm (UInt8, algorithm-delivered pulses)
-    ///
-    /// Note: This format is derived from RE analysis of the PatientHistoryRecord structure.
-    /// Field mapping may need adjustment based on real pod interaction testing.
+    /// Record format (7 bytes, from RE analysis of PatientHistoryRecord):
+    ///   Byte 0-3: recordTimestampInSeconds (UInt32 BE, seconds from start of history window)
+    ///   Byte 4:   sumUserBolusCorrection (UInt8, in 0.05U pulses, clamped to 255)
+    ///   Byte 5:   sumUserBolusMeal (UInt8, in 0.05U pulses, clamped to 255)
+    ///   Byte 6:   sumAlgorithm (UInt8, algorithm-delivered pulses in that window)
     private static func encodeInsulinHistory(doses: [(timestamp: Date, units: Double, isMeal: Bool)]) -> [[Data]] {
-        let totalRecords = 72 // 3 batches x 24 records
         let bytesPerRecord = 7
+        let now = Date()
+        let windowStart = now.addingTimeInterval(-historyWindowSeconds)
 
-        // Sort doses by timestamp, most recent first
-        let sortedDoses = doses.sorted { $0.timestamp > $1.timestamp }
+        let sortedDoses = doses.sorted { $0.timestamp < $1.timestamp }
 
-        // Group doses into half-hour windows aligned to the most recent dose
-        let referenceTime = sortedDoses.first?.timestamp ?? Date()
         var records: [Data] = []
 
         for recordIndex in 0..<totalRecords {
-            let windowEnd = referenceTime.addingTimeInterval(-Double(recordIndex) * 1800.0)
-            let windowStart = windowEnd.addingTimeInterval(-1800.0)
+            let slotStart = windowStart.addingTimeInterval(Double(recordIndex) * secondsPerRecord)
+            let slotEnd = slotStart.addingTimeInterval(secondsPerRecord)
 
-            // Find doses in this window
-            let windowDoses = sortedDoses.filter { $0.timestamp > windowStart && $0.timestamp <= windowEnd }
+            let slotDoses = sortedDoses.filter { $0.timestamp >= slotStart && $0.timestamp < slotEnd }
 
             var record = Data(count: bytesPerRecord)
-            let timestampSeconds = UInt32(max(0, windowEnd.timeIntervalSince(referenceTime.addingTimeInterval(-Double(totalRecords) * 1800.0))))
+            let timestampSeconds = UInt32(slotEnd.timeIntervalSince(windowStart))
             record[0] = UInt8((timestampSeconds >> 24) & 0xFF)
             record[1] = UInt8((timestampSeconds >> 16) & 0xFF)
             record[2] = UInt8((timestampSeconds >> 8) & 0xFF)
@@ -141,8 +140,8 @@ struct O5TherapyConfigBuilder {
 
             var correctionPulses: Double = 0
             var mealPulses: Double = 0
-            for dose in windowDoses {
-                let pulses = dose.units / 0.05 // Convert units to 0.05U pulses
+            for dose in slotDoses {
+                let pulses = dose.units / 0.05
                 if dose.isMeal {
                     mealPulses += pulses
                 } else {
@@ -152,12 +151,11 @@ struct O5TherapyConfigBuilder {
 
             record[4] = UInt8(clamping: Int(correctionPulses.rounded()))
             record[5] = UInt8(clamping: Int(mealPulses.rounded()))
-            record[6] = 0 // sumAlgorithm: always 0 when Loop controls dosing
+            record[6] = 0 // Loop controls dosing, not Insulet algorithm
 
             records.append(record)
         }
 
-        // Split into 3 batches of 24
         return stride(from: 0, to: records.count, by: 24).map { start in
             Array(records[start..<min(start + 24, records.count)])
         }

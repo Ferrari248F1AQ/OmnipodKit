@@ -38,8 +38,8 @@ struct O5TherapyConfig {
 
     // MARK: - Insulin History
 
-    /// 3 batches of 24 records (7 bytes each) representing recent insulin delivery history.
-    /// nil = send all zeros (fresh pod activation with no history to transfer).
+    /// 3 batches of 24 records (7 bytes each) covering 14 days of insulin delivery history.
+    /// Each record summarizes ~4h 40m of bolus activity. nil = send all zeros (no history).
     let insulinHistoryBatches: [[Data]]?
 
     // MARK: - Initialization from Loop Settings
