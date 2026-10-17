@@ -7,6 +7,7 @@
 //  Copyright © 2024 LoopKit Authors. All rights reserved.
 //
 
+import Foundation
 import RileyLinkBLEKit
 import LoopKit
 import os.log
@@ -622,6 +623,10 @@ extension OmniPumpManagerState: CustomDebugStringConvertible {
             "",
         ].joined(separator: "\n")
         return retVal
+    }
+
+    public static func == (lhs: OmniPumpManagerState, rhs: OmniPumpManagerState) -> Bool {
+        return NSDictionary(dictionary: lhs.rawValue).isEqual(to: rhs.rawValue)
     }
 }
 
