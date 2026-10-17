@@ -550,7 +550,7 @@ struct OmniSettingsView: View  {
                     aidStatus: viewModel.o5AidStatus,
                     isO5Pod: viewModel.isO5Pod,
                     onModeChange: { mode in
-                        viewModel.setO5AlgorithmMode(mode)
+                        try viewModel.setO5AlgorithmMode(mode)
                     }
                 )
             }

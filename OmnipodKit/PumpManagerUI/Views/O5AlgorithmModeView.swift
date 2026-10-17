@@ -14,10 +14,12 @@ struct O5AlgorithmModeView: View {
     @Binding var selectedMode: O5AlgorithmMode
     var aidStatus: O5AidStatus?
     var isO5Pod: Bool
-    var onModeChange: (O5AlgorithmMode) -> Void
+    var onModeChange: (O5AlgorithmMode) throws -> Void
 
     @State private var showingConfirmation = false
     @State private var pendingMode: O5AlgorithmMode?
+    @State private var switchError: String?
+    @State private var showingSwitchError = false
 
     var body: some View {
         if isO5Pod {
@@ -50,7 +52,14 @@ struct O5AlgorithmModeView: View {
                     message: Text(confirmationMessage),
                     primaryButton: .default(Text(LocalizedString("Switch", comment: "Confirm algorithm switch"))) {
                         if let mode = pendingMode {
-                            onModeChange(mode)
+                            do {
+                                try onModeChange(mode)
+                            } catch {
+                                // Revert the picker on failure
+                                selectedMode = mode == .loopAlgorithm ? .insuletAID : .loopAlgorithm
+                                switchError = error.localizedDescription
+                                showingSwitchError = true
+                            }
                         }
                     },
                     secondaryButton: .cancel {
@@ -59,6 +68,13 @@ struct O5AlgorithmModeView: View {
                             selectedMode = mode == .loopAlgorithm ? .insuletAID : .loopAlgorithm
                         }
                     }
+                )
+            }
+            .alert(isPresented: $showingSwitchError) {
+                Alert(
+                    title: Text(LocalizedString("Cannot Switch Algorithm", comment: "Alert title when algorithm switch is blocked")),
+                    message: Text(switchError ?? ""),
+                    dismissButton: .default(Text(LocalizedString("OK", comment: "OK button")))
                 )
             }
         }

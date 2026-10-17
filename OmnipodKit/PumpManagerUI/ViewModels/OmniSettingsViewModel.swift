@@ -591,8 +591,8 @@ class OmniSettingsViewModel: ObservableObject {
         return pumpManager.noSilentBeep
     }
 
-    func setO5AlgorithmMode(_ mode: O5AlgorithmMode) {
-        pumpManager.o5AlgorithmMode = mode
+    func setO5AlgorithmMode(_ mode: O5AlgorithmMode) throws {
+        try pumpManager.setO5AlgorithmMode(mode)
         o5AlgorithmMode = mode
     }
 
