@@ -1181,6 +1181,9 @@ extension OmniPumpManager {
             // Clear stale O5 pending command so it's not sent to a new pod
             state.pendingO5LoopState = nil
         }
+
+        // Reset CGM registration so it re-registers with the next pod
+        o5NudgeController.resetCgmRegistration()
     }
 
 
@@ -1748,7 +1751,9 @@ extension OmniPumpManager {
             blePodComms.blePairAndSetupPod(timeZone: .currentFixed, insulinType: insulinType, therapyConfig: therapyConfig, messageLogger: self) { (result) in
                 switch result {
                 case .success:
-                    // Calls completion
+                    if self.o5CgmSensorConfig != nil {
+                        self.o5NudgeController.isCgmSensorRegistered = true
+                    }
                     primeSession(result)
                 case .failure(let error):
                     self.log.error("blePairAndSetupAndPrimePod failed with %{public}@", String(describing: error))
@@ -3982,6 +3987,10 @@ extension OmniPumpManager: O5NudgeDataSource {
         guard let mgdl = state.podState?.latestGlucoseMgdl,
               let date = state.podState?.latestGlucoseDate else { return nil }
         return (mgdl: mgdl, date: date)
+    }
+
+    func cgmSensorConfig() -> O5CgmSensorConfig? {
+        return o5CgmSensorConfig
     }
 
     func recentGlucoseHistory(minutes: Int) -> [(mgdl: Int, date: Date)] {

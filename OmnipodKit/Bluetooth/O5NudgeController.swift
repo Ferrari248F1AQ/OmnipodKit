@@ -32,6 +32,9 @@ protocol O5NudgeDataSource: AnyObject {
 
     /// Whether activity mode is requested by the user.
     func isActivityModeRequested() -> (active: Bool, duration: Int, intensity: Int)?
+
+    /// Current CGM sensor config for late-registration with an active pod.
+    func cgmSensorConfig() -> O5CgmSensorConfig?
 }
 
 /// Delegate for receiving pod-initiated nudge events (alarms, alerts).
@@ -69,6 +72,9 @@ class O5NudgeController {
     /// Last loop state sent to the pod.
     private(set) var lastLoopStateSent: O5LoopStateValue?
 
+    /// Whether the CGM sensor has been registered with the active pod.
+    var isCgmSensorRegistered: Bool = false
+
     /// Count of consecutive missing EGV readings.
     private(set) var missingEgvCount: Int = 0
 
@@ -96,6 +102,9 @@ class O5NudgeController {
     /// - Parameter transport: The active BLE message transport for sending O5 AID commands.
     /// - Returns: Updated O5AidStatus from the pod.
     func performNudgeCycle(transport: BlePodMessageTransport) throws -> O5AidStatus {
+
+        // 0. Late-register CGM sensor if config became available after pod activation
+        registerCgmSensorIfNeeded(transport: transport)
 
         // 1. Send CGM update if we have a new reading
         let cgmSent = try nudgeCgm(transport: transport)
@@ -130,6 +139,38 @@ class O5NudgeController {
         delegate?.nudgeController(self, didUpdateAidStatus: status)
 
         return status
+    }
+
+    // MARK: - Late CGM Registration
+
+    /// Transmitter ID of the last successfully registered sensor (to detect CGM changes).
+    private var registeredTransmitterId: String?
+
+    /// Registers CGM sensor with an already-active pod if config became available after activation,
+    /// or if the sensor changed (e.g. G6→G7 swap).
+    private func registerCgmSensorIfNeeded(transport: BlePodMessageTransport) {
+        guard let config = dataSource?.cgmSensorConfig() else { return }
+
+        // Skip if already registered with the same sensor
+        if isCgmSensorRegistered, registeredTransmitterId == config.transmitterId {
+            return
+        }
+
+        do {
+            try cgmPairingManager.registerSensor(config: config, transport: transport)
+            isCgmSensorRegistered = true
+            registeredTransmitterId = config.transmitterId
+            log.default("Late CGM sensor registration successful: %{public}@, txId=%{public}@",
+                        config.sensorType.displayName, config.transmitterId ?? "nil")
+        } catch {
+            log.error("Late CGM sensor registration failed (will retry next nudge): %{public}@", String(describing: error))
+        }
+    }
+
+    /// Resets CGM registration state (call on pod deactivation).
+    func resetCgmRegistration() {
+        isCgmSensorRegistered = false
+        registeredTransmitterId = nil
     }
 
     // MARK: - CGM Nudge
