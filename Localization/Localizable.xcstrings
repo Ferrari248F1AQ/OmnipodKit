@@ -41191,7 +41191,7 @@
         }
       }
     },
-    "Omnipod 5 Pods have a clear needle tab with a 12-character LOT number typically starting with 'PH1' or 'PR1'. The Pod's \"SmartAdjust\" technology will not be used for closed loop control." : {
+    "Omnipod 5 Pods have a clear needle tab with a 12-character LOT number typically starting with 'PH1' or 'PR1'. Supports both Loop algorithm and the Pod's built-in SmartAdjust algorithm — switch between them in Settings." : {
       "comment" : "Description for Omnipod 5 pods",
       "localizations" : {
         "de" : {
