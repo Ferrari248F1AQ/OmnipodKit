@@ -52,6 +52,12 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
     /// ICR schedule forwarded from Loop for regression analysis: (startTime, gramsPerUnit)
     var carbRatioScheduleForRegression: [(startTime: TimeInterval, gramsPerUnit: Double)] = []
 
+    /// Nightscout site URL for regression data import (e.g. "https://mysite.herokuapp.com")
+    var nightscoutURL: String?
+
+    /// Nightscout API token (readable token, not the hashed api-secret)
+    var nightscoutToken: String?
+
     mutating func updateO5LatestGlucose(mgdl: Int, date: Date) {
         podState?.latestGlucoseMgdl = mgdl
         podState?.latestGlucoseDate = date
@@ -459,6 +465,9 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
             }
         }
 
+        self.nightscoutURL = rawValue["nightscoutURL"] as? String
+        self.nightscoutToken = rawValue["nightscoutToken"] as? String
+
         if podType.isEros {
             // Some more Eros specific values
             if let pairingAttemptAddress = rawValue["pairingAttemptAddress"] as? UInt32 {
@@ -519,6 +528,8 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
                 ["startTime": $0.startTime, "gramsPerUnit": $0.gramsPerUnit] as [String: Any]
             }
         }
+        if let url = nightscoutURL { value["nightscoutURL"] = url }
+        if let token = nightscoutToken { value["nightscoutToken"] = token }
 
         return value
     }

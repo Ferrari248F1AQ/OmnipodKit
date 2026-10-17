@@ -58,6 +58,16 @@ class OmniSettingsViewModel: ObservableObject {
     @Published var o5AidStatus: O5AidStatus?
 
     @Published var regressionReport: RegressionReport?
+    @Published var nightscoutURL: String = ""
+    @Published var nightscoutToken: String = ""
+    @Published var nightscoutImportStatus: NightscoutImportStatus = .idle
+
+    enum NightscoutImportStatus: Equatable {
+        case idle
+        case importing
+        case success(glucose: Int, carbs: Int, insulin: Int)
+        case error(String)
+    }
 
     var activatedAtString: String {
         guard let activatedAt = activatedAt else {
@@ -301,6 +311,8 @@ class OmniSettingsViewModel: ObservableObject {
         o5AlgorithmMode = pumpManager.o5AlgorithmMode
         o5AidStatus = pumpManager.state.podState?.o5AidStatus
         controllerId = pumpManager.state.controllerId
+        nightscoutURL = pumpManager.state.nightscoutURL ?? ""
+        nightscoutToken = pumpManager.state.nightscoutToken ?? ""
 
         pumpManager.addPodStateObserver(self, queue: DispatchQueue.main)
         pumpManager.addStatusObserver(self, queue: DispatchQueue.main)
@@ -594,6 +606,24 @@ class OmniSettingsViewModel: ObservableObject {
     func setO5AlgorithmMode(_ mode: O5AlgorithmMode) throws {
         try pumpManager.setO5AlgorithmMode(mode)
         o5AlgorithmMode = mode
+    }
+
+    func importFromNightscout() {
+        guard !nightscoutURL.isEmpty else { return }
+        nightscoutImportStatus = .importing
+
+        let token = nightscoutToken.isEmpty ? nil : nightscoutToken
+        pumpManager.importRegressionDataFromNightscout(url: nightscoutURL, token: token) { [weak self] result in
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let r):
+                    self?.nightscoutImportStatus = .success(glucose: r.glucoseCount, carbs: r.carbCount, insulin: r.insulinCount)
+                    self?.refreshRegressionReport()
+                case .failure(let err):
+                    self?.nightscoutImportStatus = .error(err.localizedDescription)
+                }
+            }
+        }
     }
 
     private var cachedICREntries: [RepeatingScheduleValue<Double>]?

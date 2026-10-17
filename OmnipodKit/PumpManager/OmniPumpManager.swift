@@ -4155,6 +4155,64 @@ extension OmniPumpManager: O5NudgeDataSource {
         }
     }
 
+    // MARK: - Nightscout regression import
+
+    public func importRegressionDataFromNightscout(
+        url: String,
+        token: String?,
+        days: Int = 14,
+        completion: @escaping (Result<NightscoutImportResult, NightscoutImportError>) -> Void
+    ) {
+        // Save credentials
+        setState { state in
+            state.nightscoutURL = url
+            state.nightscoutToken = token
+        }
+
+        do {
+            let importer = try NightscoutRegressionImporter(siteURL: url, token: token)
+            importer.fetchRegressionData(days: days) { [weak self] result in
+                switch result {
+                case .failure(let err):
+                    completion(.failure(err))
+                case .success(let data):
+                    self?.setState { state in
+                        // Merge, dedup by date (keep existing if same timestamp)
+                        let existingGlucoseDates = Set(state.glucoseHistoryForRegression.map { $0.date.timeIntervalSinceReferenceDate })
+                        let newGlucose = data.glucose.filter { !existingGlucoseDates.contains($0.date.timeIntervalSinceReferenceDate) }
+                        state.glucoseHistoryForRegression.append(contentsOf: newGlucose)
+                        state.glucoseHistoryForRegression.sort { $0.date < $1.date }
+
+                        let existingCarbDates = Set(state.carbHistoryForRegression.map { $0.date.timeIntervalSinceReferenceDate })
+                        let newCarbs = data.carbs.filter { !existingCarbDates.contains($0.date.timeIntervalSinceReferenceDate) }
+                        state.carbHistoryForRegression.append(contentsOf: newCarbs)
+                        state.carbHistoryForRegression.sort { $0.date < $1.date }
+
+                        let existingInsulinDates = Set(state.recentInsulinHistory.map { $0.timestamp.timeIntervalSinceReferenceDate })
+                        let newInsulin = data.insulin.filter { !existingInsulinDates.contains($0.timestamp.timeIntervalSinceReferenceDate) }
+                        state.recentInsulinHistory.append(contentsOf: newInsulin)
+                        state.recentInsulinHistory.sort { $0.timestamp < $1.timestamp }
+
+                        // Trim to 14 days
+                        let cutoff = Date().addingTimeInterval(-14 * 86400)
+                        state.glucoseHistoryForRegression.removeAll { $0.date < cutoff }
+                        state.carbHistoryForRegression.removeAll { $0.date < cutoff }
+                        state.recentInsulinHistory.removeAll { $0.timestamp < cutoff }
+                    }
+                    completion(.success(NightscoutImportResult(
+                        glucoseCount: data.glucose.count,
+                        carbCount: data.carbs.count,
+                        insulinCount: data.insulin.count
+                    )))
+                }
+            }
+        } catch let err as NightscoutImportError {
+            completion(.failure(err))
+        } catch {
+            completion(.failure(.networkError(error)))
+        }
+    }
+
     func currentGlucoseTargets() -> [(startTime: TimeInterval, targetMgdl: Double)]? {
         guard let schedule = state.podState?.glucoseTargetSchedule else { return nil }
         return schedule.map { (startTime: $0.startTime, targetMgdl: $0.value) }

@@ -624,6 +624,57 @@ struct OmniSettingsView: View  {
                     }
                 }
 
+                // Nightscout data import for regression
+                if viewModel.isO5Pod {
+                    DisclosureGroup(
+                        content: {
+                            VStack(alignment: .leading, spacing: 8) {
+                                TextField("Nightscout URL", text: $viewModel.nightscoutURL)
+                                    .textContentType(.URL)
+                                    .autocapitalization(.none)
+                                    .disableAutocorrection(true)
+                                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                                TextField("Token (optional)", text: $viewModel.nightscoutToken)
+                                    .autocapitalization(.none)
+                                    .disableAutocorrection(true)
+                                    .textFieldStyle(RoundedBorderTextFieldStyle())
+
+                                Button(action: { viewModel.importFromNightscout() }) {
+                                    HStack {
+                                        if viewModel.nightscoutImportStatus == .importing {
+                                            ProgressView()
+                                                .progressViewStyle(CircularProgressViewStyle())
+                                        }
+                                        Text(LocalizedString("Import 14 Days", comment: "Nightscout import button"))
+                                    }
+                                }
+                                .disabled(viewModel.nightscoutURL.isEmpty || viewModel.nightscoutImportStatus == .importing)
+
+                                switch viewModel.nightscoutImportStatus {
+                                case .success(let g, let c, let i):
+                                    Text("Imported: \(g) glucose, \(c) carbs, \(i) insulin")
+                                        .font(.caption)
+                                        .foregroundColor(.green)
+                                case .error(let msg):
+                                    Text(msg)
+                                        .font(.caption)
+                                        .foregroundColor(.red)
+                                default:
+                                    EmptyView()
+                                }
+                            }
+                            .padding(.vertical, 4)
+                        },
+                        label: {
+                            HStack {
+                                Image(systemName: "icloud.and.arrow.down")
+                                    .foregroundColor(.blue)
+                                Text(LocalizedString("Import from Nightscout", comment: "Nightscout import section"))
+                            }
+                        }
+                    )
+                }
+
                 // O5 Therapy Insights (15-day regression report)
                 if viewModel.isO5Pod {
                     NavigationLink(destination:
