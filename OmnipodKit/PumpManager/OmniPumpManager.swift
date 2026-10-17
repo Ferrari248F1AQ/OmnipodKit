@@ -36,6 +36,7 @@ enum OmniPumpManagerError: Error {
     case invalidSetting
     case podTypeNotConfigured
     case insuletAIDActive
+    case activeDeliveryDuringAlgorithmSwitch
     case communication(Error)
     case state(Error)
 }
@@ -53,6 +54,10 @@ extension OmniPumpManagerError: LocalizedError {
             return LocalizedString("Invalid Setting", comment: "Error description for invalid setting")
         case .podTypeNotConfigured:
             return LocalizedString("Pod type not configured", comment: "Error message when pod type is not configured")
+        case .insuletAIDActive:
+            return LocalizedString("Manual dosing is not allowed while Insulet AID is active. The pod's on-board algorithm is managing insulin delivery.", comment: "Error message when manual dosing is attempted during Insulet AID mode")
+        case .activeDeliveryDuringAlgorithmSwitch:
+            return LocalizedString("Cannot switch algorithm while insulin is being delivered. A bolus or temp basal is currently active.", comment: "Error message when algorithm switch is blocked by active insulin delivery")
         case .communication(let error):
             if let error = error as? LocalizedError {
                 return error.errorDescription
@@ -76,6 +81,10 @@ extension OmniPumpManagerError: LocalizedError {
         switch self {
         case .noPodPaired:
             return LocalizedString("Please pair a new pod", comment: "Recovery suggestion shown when no pod is paired")
+        case .insuletAIDActive:
+            return LocalizedString("Switch to Loop algorithm mode before delivering a manual bolus or setting a temp basal.", comment: "Recovery suggestion when manual dosing is blocked by Insulet AID mode")
+        case .activeDeliveryDuringAlgorithmSwitch:
+            return LocalizedString("Wait for the current bolus or temp basal to finish, or cancel it before switching algorithms.", comment: "Recovery suggestion when algorithm switch is blocked by active delivery")
         default:
             return nil
         }
@@ -1364,13 +1373,53 @@ extension OmniPumpManager {
 
     // MARK: - O5 Algorithm Mode
 
-    /// The active dosing algorithm for the current O5 pod session.
+    /// The active dosing algorithm for the current O5 pod session (read-only).
     var o5AlgorithmMode: O5AlgorithmMode {
-        get { return state.podState?.o5AlgorithmMode ?? .loopAlgorithm }
-        set {
-            setState { state in
-                state.updateO5AlgorithmMode(newValue)
+        return state.podState?.o5AlgorithmMode ?? .loopAlgorithm
+    }
+
+    /// Switch the active dosing algorithm, with safety checks for active insulin delivery.
+    ///
+    /// Prevents algorithm switching while a bolus or temp basal is in progress to avoid
+    /// double-dosing: e.g. Loop delivering a temp basal while Insulet AID also starts dosing,
+    /// or vice versa.
+    ///
+    /// - Parameter mode: The target algorithm mode.
+    /// - Throws: `OmniPumpManagerError.activeDeliveryDuringAlgorithmSwitch` if a bolus or
+    ///   temp basal is currently being delivered.
+    func setO5AlgorithmMode(_ mode: O5AlgorithmMode) throws {
+        // No change needed
+        guard mode != o5AlgorithmMode else { return }
+
+        // SAFETY: reject the switch if there is any active insulin delivery in progress
+        if let podState = state.podState {
+            // Check for an unfinalized (in-progress) bolus
+            if let bolus = podState.unfinalizedBolus, !bolus.isFinished() {
+                log.error("Algorithm switch rejected: active bolus in progress")
+                throw OmniPumpManagerError.activeDeliveryDuringAlgorithmSwitch
             }
+            // Check for an unfinalized (in-progress) temp basal
+            if let tempBasal = podState.unfinalizedTempBasal, !tempBasal.isFinished() {
+                log.error("Algorithm switch rejected: active temp basal in progress")
+                throw OmniPumpManagerError.activeDeliveryDuringAlgorithmSwitch
+            }
+            // Also check the last known pod delivery status for bolus/temp basal activity.
+            // This catches cases where the pod is delivering but our local state hasn't
+            // been updated yet (e.g. after a comms interruption).
+            if let deliveryStatus = podState.lastDeliveryStatusReceived {
+                if deliveryStatus.bolusing {
+                    log.error("Algorithm switch rejected: pod reports active bolus (deliveryStatus: %{public}@)", String(describing: deliveryStatus))
+                    throw OmniPumpManagerError.activeDeliveryDuringAlgorithmSwitch
+                }
+                if deliveryStatus.tempBasalRunning {
+                    log.error("Algorithm switch rejected: pod reports active temp basal (deliveryStatus: %{public}@)", String(describing: deliveryStatus))
+                    throw OmniPumpManagerError.activeDeliveryDuringAlgorithmSwitch
+                }
+            }
+        }
+
+        setState { state in
+            state.updateO5AlgorithmMode(mode)
         }
     }
 
@@ -2827,6 +2876,15 @@ extension OmniPumpManager: PumpManager {
             return
         }
 
+        // Block manual bolus while Insulet AID is actively managing delivery.
+        // The on-pod algorithm controls dosing; manual boluses on top could cause dangerous over-delivery.
+        // Cancel/stop commands are NOT blocked (they go through cancelDelivery, not enactBolus).
+        if self.isO5AidActive {
+            self.log.error("enactBolus rejected: Insulet AID is active, manual dosing is not allowed")
+            completion(.deviceState(OmniPumpManagerError.insuletAIDActive))
+            return
+        }
+
         guard units <= state.maxBolusUnits else {
             completion(.configuration(OmniPumpManagerError.invalidSetting))
             return
@@ -2975,6 +3033,15 @@ extension OmniPumpManager: PumpManager {
     }
 
     public func enactTempBasal(unitsPerHour: Double, for duration: TimeInterval, automatic: Bool, completion: @escaping (PumpManagerError?) -> Void) {
+        // Block temp basal programming while Insulet AID is actively managing delivery,
+        // but allow cancel/resume requests (duration ~0) to pass through as a safety override.
+        let isCancelRequest = duration < .ulpOfOne
+        if self.isO5AidActive && !isCancelRequest {
+            self.log.error("enactTempBasal rejected: Insulet AID is active, manual dosing is not allowed")
+            completion(.deviceState(OmniPumpManagerError.insuletAIDActive))
+            return
+        }
+
         if unitsPerHour > state.maxBasalRateUnitsPerHour {
             /// The app is trying to set a TBR above the configured max basal. This can happen if the
             /// app isn't properly sync'ing its max basal rate to the Pump Manager. Rather than returning
