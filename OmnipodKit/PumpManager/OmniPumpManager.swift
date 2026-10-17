@@ -35,6 +35,7 @@ enum OmniPumpManagerError: Error {
     case notReadyForCannulaInsertion
     case invalidSetting
     case podTypeNotConfigured
+    case insuletAIDActive
     case communication(Error)
     case state(Error)
 }
@@ -1406,6 +1407,18 @@ extension OmniPumpManager {
             }
         } catch {
             log.error("O5 Nudge cycle failed: %{public}@", String(describing: error))
+            // CRITICAL: Save transport state even on error to prevent nonce desync.
+            // The nonce may have been incremented during the failed command exchange,
+            // so we must persist it to avoid the pod becoming unreachable.
+            setState { state in
+                state.updateO5BleTransportState(BleMessageTransportState(
+                    ck: transport.ck,
+                    noncePrefix: transport.noncePrefix,
+                    msgSeq: transport.msgSeq,
+                    nonceSeq: transport.nonceSeq,
+                    messageNumber: transport.messageNumber
+                ))
+            }
         }
     }
 
