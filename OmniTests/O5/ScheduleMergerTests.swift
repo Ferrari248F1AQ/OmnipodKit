@@ -226,7 +226,7 @@ final class ScheduleMergerTests: XCTestCase {
     }
 
     func testMergeReducesEntryCount() {
-        // 9 entries, merge a block covering 3 of them
+        // 9 entries, merge a block covering 4 of them
         let current: [RepeatingScheduleValue<Double>] = [
             RepeatingScheduleValue(startTime: 0, value: 0.4),
             RepeatingScheduleValue(startTime: 16200, value: 0.45),   // 04:30
@@ -239,7 +239,7 @@ final class ScheduleMergerTests: XCTestCase {
             RepeatingScheduleValue(startTime: 81000, value: 0.35),   // 22:30
         ]
 
-        // Merge 12:00-18:00 → collapses 12:00, 13:30, 15:30 into single 12:00
+        // Merge 12:00-18:00 → collapses 12:00, 13:30, 15:30, 17:00 into single 12:00
         let merged = ScheduleMerger.mergeBasal(
             current: current,
             suggestionStart: 43200,
@@ -247,14 +247,14 @@ final class ScheduleMergerTests: XCTestCase {
             newRate: 0.3
         )
 
-        // 9 - 3 + 1 = 7
-        XCTAssertEqual(merged.count, 7)
-        // The new entry is at 12:00
+        // 4 entries in [43200,64800): 12:00, 13:30, 15:30, 17:00 → 9 - 4 + 1 = 6
+        XCTAssertEqual(merged.count, 6)
         XCTAssertEqual(merged[3].startTime, 43200)
         XCTAssertEqual(merged[3].value, 0.3)
-        // 17:00 is at startTime 61200 which is < 64800 → also removed
-        // Next after merged block is 20:00
-        XCTAssertEqual(merged[4].startTime, 61200) // 17:00 — wait, 61200 < 64800
+        XCTAssertEqual(merged[4].startTime, 72000) // 20:00 — first after range
+        XCTAssertEqual(merged[4].value, 0.2)
+        XCTAssertEqual(merged[5].startTime, 81000) // 22:30
+        XCTAssertEqual(merged[5].value, 0.35)
     }
 
     func testMergeMiddleBlock_correctCounts() {

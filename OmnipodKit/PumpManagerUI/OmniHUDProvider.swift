@@ -69,7 +69,7 @@ internal class OmniHUDProvider: NSObject, HUDProvider {
     
     var hudViewRawState: HUDProvider.HUDViewRawState {
         var rawValue: HUDProvider.HUDViewRawState = [:]
-        
+
         rawValue["lastStatusDate"] = pumpManager.lastStatusDate
 
         if let reservoirLevel = pumpManager.reservoirLevel {
@@ -79,6 +79,9 @@ internal class OmniHUDProvider: NSObject, HUDProvider {
         if let reservoirLevelHighlightState = pumpManager.reservoirLevelHighlightState {
             rawValue["reservoirLevelHighlightState"] = reservoirLevelHighlightState.rawValue
         }
+
+        rawValue["isO5"] = pumpManager.state.podType.isO5
+        rawValue["isInsuletAID"] = pumpManager.isO5AidActive
 
         return rawValue
     }
@@ -98,6 +101,9 @@ internal class OmniHUDProvider: NSObject, HUDProvider {
         if let lastStatusDate = rawValue["lastStatusDate"] as? Date {
             reservoirView = OmniReservoirView.instantiate()
             reservoirView!.update(level: reservoirLevel, at: lastStatusDate, reservoirLevelHighlightState: reservoirLevelHighlightState)
+            let isO5 = rawValue["isO5"] as? Bool ?? false
+            let isInsuletAID = rawValue["isInsuletAID"] as? Bool ?? false
+            reservoirView!.updateAlgorithmMode(isO5: isO5, isInsuletAID: isInsuletAID)
         } else {
             reservoirView = nil
         }
@@ -120,8 +126,12 @@ internal class OmniHUDProvider: NSObject, HUDProvider {
         {
             return
         }
-            
+
         reservoirView.update(level: pumpManager.reservoirLevel, at: lastStatusDate, reservoirLevelHighlightState: reservoirLevelHighlightState)
+        reservoirView.updateAlgorithmMode(
+            isO5: pumpManager.state.podType.isO5,
+            isInsuletAID: pumpManager.isO5AidActive
+        )
     }
 }
 

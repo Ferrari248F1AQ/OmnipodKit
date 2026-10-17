@@ -18,7 +18,7 @@ final class OmniReservoirView: LevelHUDView, NibLoadable {
     }
 
     @IBOutlet private weak var volumeLabel: UILabel!
-    
+
     @IBOutlet private weak var alertLabel: UILabel! {
         didSet {
             alertLabel.alpha = 0
@@ -28,6 +28,17 @@ final class OmniReservoirView: LevelHUDView, NibLoadable {
         }
     }
 
+    private lazy var algorithmBadge: UILabel = {
+        let label = UILabel()
+        label.font = .systemFont(ofSize: 8, weight: .bold)
+        label.textAlignment = .center
+        label.textColor = .white
+        label.layer.cornerRadius = 6
+        label.clipsToBounds = true
+        label.translatesAutoresizingMaskIntoConstraints = false
+        return label
+    }()
+
     class func instantiate() -> OmniReservoirView {
         return nib().instantiate(withOwner: nil, options: nil)[0] as! OmniReservoirView
     }
@@ -36,6 +47,14 @@ final class OmniReservoirView: LevelHUDView, NibLoadable {
         super.awakeFromNib()
 
         volumeLabel.isHidden = true
+        algorithmBadge.isHidden = true
+        addSubview(algorithmBadge)
+        NSLayoutConstraint.activate([
+            algorithmBadge.widthAnchor.constraint(equalToConstant: 12),
+            algorithmBadge.heightAnchor.constraint(equalToConstant: 12),
+            algorithmBadge.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
+            algorithmBadge.topAnchor.constraint(equalTo: topAnchor, constant: 2),
+        ])
     }
 
     private var reservoirLevel: ReservoirLevel?
@@ -124,5 +143,20 @@ final class OmniReservoirView: LevelHUDView, NibLoadable {
         self.lastUpdateDate = date
         self.reservoirLevelHighlightState = reservoirLevelHighlightState
         updateViews()
+    }
+
+    func updateAlgorithmMode(isO5: Bool, isInsuletAID: Bool) {
+        guard isO5 else {
+            algorithmBadge.isHidden = true
+            return
+        }
+        algorithmBadge.isHidden = false
+        if isInsuletAID {
+            algorithmBadge.text = "S"
+            algorithmBadge.backgroundColor = UIColor.systemOrange
+        } else {
+            algorithmBadge.text = "L"
+            algorithmBadge.backgroundColor = UIColor.systemBlue
+        }
     }
 }
