@@ -18,6 +18,9 @@ protocol O5NudgeDataSource: AnyObject {
     /// Latest CGM value in mg/dL and its timestamp.
     func latestGlucose() -> (mgdl: Int, date: Date)?
 
+    /// Recent glucose history for Kalman filter warmup (newest first, up to ~30 min).
+    func recentGlucoseHistory(minutes: Int) -> [(mgdl: Int, date: Date)]
+
     /// Dose history for TDI calculation: (startDate, endDate, deliveredUnits, isBasal).
     func recentDoseHistory(since: Date) -> [(startDate: Date, endDate: Date, deliveredUnits: Double, isBasal: Bool)]
 
@@ -160,6 +163,45 @@ class O5NudgeController {
         cgmPairingManager.updateCgmState(from: mgdl)
 
         return true
+    }
+
+    // MARK: - CGM History Burst
+
+    /// Sends recent CGM history to the pod to accelerate Kalman filter warmup.
+    /// Called when switching from Loop algorithm to Insulet AID so the pod
+    /// doesn't spend ~30 min in limited mode waiting for enough EGV data.
+    ///
+    /// Sends up to 6 readings (oldest first) from the last 30 minutes,
+    /// one EgvCommand per reading. The pod's Kalman filter uses the sequence
+    /// to estimate glucose rate of change (x1) and acceleration (x2).
+    func sendCgmHistoryBurst(transport: BlePodMessageTransport) throws -> Int {
+        guard let dataSource = dataSource else { return 0 }
+
+        let history = dataSource.recentGlucoseHistory(minutes: 30)
+        guard !history.isEmpty else {
+            log.default("CGM burst: no recent glucose history available")
+            return 0
+        }
+
+        // Send oldest first so Kalman processes them in chronological order.
+        // Limit to 6 readings (~30 min at 5-min intervals).
+        let readings = Array(history.suffix(6).reversed())
+
+        var sentCount = 0
+        for reading in readings {
+            let egvString = String(reading.mgdl)
+            let (payload, prefix) = O5AidCommands.EgvCommand.payload(value: egvString)
+            let _ = try transport.sendO5AidCommand(payload, responsePrefix: prefix)
+            sentCount += 1
+        }
+
+        if let last = readings.last {
+            lastEgvSent = last.mgdl
+            lastEgvSentDate = last.date
+        }
+
+        log.default("CGM burst: sent %d historical EGV readings for Kalman warmup", sentCount)
+        return sentCount
     }
 
     // MARK: - TDI Nudge

@@ -1597,6 +1597,14 @@ extension OmniPumpManager {
         transport.messageLogger = self
 
         do {
+            // When activating AID, send recent CGM history to accelerate Kalman filter warmup
+            if loopState == .closedLoop {
+                let sentCount = try o5NudgeController.sendCgmHistoryBurst(transport: transport)
+                if sentCount > 0 {
+                    log.default("Sent %d CGM history readings before AID activation", sentCount)
+                }
+            }
+
             try o5NudgeController.setLoopState(loopState, transport: transport)
             log.default("Sent S3.13 loop state: %d", loopState.rawValue)
             setState { state in
@@ -3933,6 +3941,14 @@ extension OmniPumpManager: O5NudgeDataSource {
         guard let mgdl = state.podState?.latestGlucoseMgdl,
               let date = state.podState?.latestGlucoseDate else { return nil }
         return (mgdl: mgdl, date: date)
+    }
+
+    func recentGlucoseHistory(minutes: Int) -> [(mgdl: Int, date: Date)] {
+        let cutoff = Date().addingTimeInterval(-Double(minutes) * 60)
+        return state.recentGlucoseHistory
+            .filter { $0.date >= cutoff }
+            .sorted { $0.date > $1.date }
+            .map { (mgdl: $0.mgdl, date: $0.date) }
     }
 
     func recentDoseHistory(since: Date) -> [(startDate: Date, endDate: Date, deliveredUnits: Double, isBasal: Bool)] {

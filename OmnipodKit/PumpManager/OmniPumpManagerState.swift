@@ -52,6 +52,10 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
     mutating func updateO5LatestGlucose(mgdl: Int, date: Date) {
         podState?.latestGlucoseMgdl = mgdl
         podState?.latestGlucoseDate = date
+
+        recentGlucoseHistory.append(GlucoseHistoryEntry(mgdl: mgdl, date: date))
+        let cutoff = date.addingTimeInterval(-30 * 60)
+        recentGlucoseHistory.removeAll { $0.date < cutoff }
     }
 
     var timeZone: TimeZone
@@ -100,6 +104,10 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
 
     /// User's preferred O5 algorithm mode, persisted across pod changes.
     internal var preferredO5AlgorithmMode: O5AlgorithmMode = .loopAlgorithm
+
+    /// Rolling buffer of recent glucose readings for CGM history burst on AID switch.
+    /// Kept to last 30 minutes (~6 readings at 5min intervals).
+    internal var recentGlucoseHistory: [GlucoseHistoryEntry] = []
 
     // Indicates that the user has completed initial configuration
     // which means they have configured any parameters, but may not have paired a pod yet.
@@ -413,6 +421,10 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
             self.preferredO5AlgorithmMode = mode
         }
 
+        if let glucoseRaw = rawValue["recentGlucoseHistory"] as? [[String: Any]] {
+            self.recentGlucoseHistory = glucoseRaw.compactMap { GlucoseHistoryEntry(rawValue: $0) }
+        }
+
         if podType.isEros {
             // Some more Eros specific values
             if let pairingAttemptAddress = rawValue["pairingAttemptAddress"] as? UInt32 {
@@ -459,6 +471,9 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
         }
         value["pendingO5LoopState"] = pendingO5LoopState
         value["preferredO5AlgorithmMode"] = preferredO5AlgorithmMode.rawValue
+        if !recentGlucoseHistory.isEmpty {
+            value["recentGlucoseHistory"] = recentGlucoseHistory.map { $0.rawValue }
+        }
 
         return value
     }
@@ -572,5 +587,32 @@ struct InsulinHistoryEntry: Codable, Equatable {
         self.timestamp = Date(timeIntervalSinceReferenceDate: ts)
         self.units = units
         self.isMeal = rawValue["isMeal"] as? Bool ?? false
+    }
+}
+
+/// Lightweight glucose reading for CGM history burst buffer.
+struct GlucoseHistoryEntry: Equatable {
+    let mgdl: Int
+    let date: Date
+
+    var rawValue: [String: Any] {
+        return [
+            "mgdl": mgdl,
+            "date": date.timeIntervalSinceReferenceDate,
+        ]
+    }
+
+    init(mgdl: Int, date: Date) {
+        self.mgdl = mgdl
+        self.date = date
+    }
+
+    init?(rawValue: [String: Any]) {
+        guard let mgdl = rawValue["mgdl"] as? Int,
+              let ts = rawValue["date"] as? TimeInterval else {
+            return nil
+        }
+        self.mgdl = mgdl
+        self.date = Date(timeIntervalSinceReferenceDate: ts)
     }
 }
