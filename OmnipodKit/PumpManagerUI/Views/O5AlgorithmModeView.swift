@@ -20,6 +20,7 @@ struct O5AlgorithmModeView: View {
     @State private var pendingMode: O5AlgorithmMode?
     @State private var switchError: String?
     @State private var showingSwitchError = false
+    @State private var isReverting = false
 
     var body: some View {
         if isO5Pod {
@@ -34,6 +35,7 @@ struct O5AlgorithmModeView: View {
                     }
                     .pickerStyle(SegmentedPickerStyle())
                     .onChange(of: selectedMode) { newValue in
+                        guard !isReverting else { return }
                         pendingMode = newValue
                         showingConfirmation = true
                     }
@@ -55,18 +57,22 @@ struct O5AlgorithmModeView: View {
                             do {
                                 try onModeChange(mode)
                             } catch {
-                                // Revert the picker on failure
+                                isReverting = true
                                 selectedMode = mode == .loopAlgorithm ? .insuletAID : .loopAlgorithm
+                                isReverting = false
                                 switchError = error.localizedDescription
-                                showingSwitchError = true
+                                DispatchQueue.main.async {
+                                    showingSwitchError = true
+                                }
                             }
                         }
                     },
                     secondaryButton: .cancel {
-                        // Revert the picker
+                        isReverting = true
                         if let mode = pendingMode {
                             selectedMode = mode == .loopAlgorithm ? .insuletAID : .loopAlgorithm
                         }
+                        isReverting = false
                     }
                 )
             }

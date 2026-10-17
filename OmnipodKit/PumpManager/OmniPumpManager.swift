@@ -1447,30 +1447,19 @@ extension OmniPumpManager {
         // No change needed
         guard mode != o5AlgorithmMode else { return }
 
-        // SAFETY: reject the switch if there is any active insulin delivery in progress
+        // SAFETY: reject the switch only if a bolus is actively being delivered.
+        // Temp basals are NOT blocked: when switching Loop→AID the pod's algorithm
+        // supersedes Loop's temp basal, and when switching AID→Loop the temp basal
+        // expires naturally (max 30 min). Blocking on temp basals would make the
+        // switch impossible since Loop always has one running in closed-loop mode.
         if let podState = state.podState {
-            // Check for an unfinalized (in-progress) bolus
             if let bolus = podState.unfinalizedBolus, !bolus.isFinished() {
                 log.error("Algorithm switch rejected: active bolus in progress")
                 throw OmniPumpManagerError.activeDeliveryDuringAlgorithmSwitch
             }
-            // Check for an unfinalized (in-progress) temp basal
-            if let tempBasal = podState.unfinalizedTempBasal, !tempBasal.isFinished() {
-                log.error("Algorithm switch rejected: active temp basal in progress")
+            if let deliveryStatus = podState.lastDeliveryStatusReceived, deliveryStatus.bolusing {
+                log.error("Algorithm switch rejected: pod reports active bolus (deliveryStatus: %{public}@)", String(describing: deliveryStatus))
                 throw OmniPumpManagerError.activeDeliveryDuringAlgorithmSwitch
-            }
-            // Also check the last known pod delivery status for bolus/temp basal activity.
-            // This catches cases where the pod is delivering but our local state hasn't
-            // been updated yet (e.g. after a comms interruption).
-            if let deliveryStatus = podState.lastDeliveryStatusReceived {
-                if deliveryStatus.bolusing {
-                    log.error("Algorithm switch rejected: pod reports active bolus (deliveryStatus: %{public}@)", String(describing: deliveryStatus))
-                    throw OmniPumpManagerError.activeDeliveryDuringAlgorithmSwitch
-                }
-                if deliveryStatus.tempBasalRunning {
-                    log.error("Algorithm switch rejected: pod reports active temp basal (deliveryStatus: %{public}@)", String(describing: deliveryStatus))
-                    throw OmniPumpManagerError.activeDeliveryDuringAlgorithmSwitch
-                }
             }
         }
 
