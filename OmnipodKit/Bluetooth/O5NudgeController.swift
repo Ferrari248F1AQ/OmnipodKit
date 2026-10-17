@@ -183,24 +183,34 @@ class O5NudgeController {
             return 0
         }
 
-        // Send oldest first so Kalman processes them in chronological order.
-        // Limit to 6 readings (~30 min at 5-min intervals).
-        let readings = Array(history.suffix(6).reversed())
+        // history is newest-first; take up to 6 most recent, then reverse to
+        // send oldest-first so Kalman processes them in chronological order.
+        let readings = Array(history.prefix(6).reversed())
 
         var sentCount = 0
+        var lastSent: (mgdl: Int, date: Date)?
         for reading in readings {
+            guard reading.mgdl > 0 && reading.mgdl < 600 else { continue }
             let egvString = String(reading.mgdl)
             let (payload, prefix) = O5AidCommands.EgvCommand.payload(value: egvString)
-            let _ = try transport.sendO5AidCommand(payload, responsePrefix: prefix)
-            sentCount += 1
+            do {
+                let _ = try transport.sendO5AidCommand(payload, responsePrefix: prefix)
+                sentCount += 1
+                lastSent = reading
+            } catch {
+                log.error("CGM burst: failed at reading %d/%d: %{public}@",
+                          sentCount + 1, readings.count, String(describing: error))
+                break
+            }
         }
 
-        if let last = readings.last {
+        if let last = lastSent {
             lastEgvSent = last.mgdl
             lastEgvSentDate = last.date
         }
 
-        log.default("CGM burst: sent %d historical EGV readings for Kalman warmup", sentCount)
+        log.default("CGM burst: sent %d/%d historical EGV readings for Kalman warmup",
+                    sentCount, readings.count)
         return sentCount
     }
 

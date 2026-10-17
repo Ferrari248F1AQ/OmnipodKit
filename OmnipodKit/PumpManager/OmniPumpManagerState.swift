@@ -54,8 +54,11 @@ public struct OmniPumpManagerState: RawRepresentable, Equatable {
         podState?.latestGlucoseDate = date
 
         recentGlucoseHistory.append(GlucoseHistoryEntry(mgdl: mgdl, date: date))
-        let cutoff = date.addingTimeInterval(-30 * 60)
+        let cutoff = Date().addingTimeInterval(-30 * 60)
         recentGlucoseHistory.removeAll { $0.date < cutoff }
+        if recentGlucoseHistory.count > 30 {
+            recentGlucoseHistory = Array(recentGlucoseHistory.suffix(30))
+        }
     }
 
     var timeZone: TimeZone
@@ -608,11 +611,16 @@ struct GlucoseHistoryEntry: Equatable {
     }
 
     init?(rawValue: [String: Any]) {
-        guard let mgdl = rawValue["mgdl"] as? Int,
-              let ts = rawValue["date"] as? TimeInterval else {
+        guard let ts = rawValue["date"] as? TimeInterval else {
             return nil
         }
-        self.mgdl = mgdl
+        if let v = rawValue["mgdl"] as? Int {
+            self.mgdl = v
+        } else if let v = rawValue["mgdl"] as? Double {
+            self.mgdl = Int(v)
+        } else {
+            return nil
+        }
         self.date = Date(timeIntervalSinceReferenceDate: ts)
     }
 }

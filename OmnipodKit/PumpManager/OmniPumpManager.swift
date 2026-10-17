@@ -117,7 +117,12 @@ public class OmniPumpManager: RileyLinkPumpManager {
 
     /// CGM sensor configuration to register with the O5 pod during activation.
     /// Must be set before pod activation if using Insulet AID mode.
-    var o5CgmSensorConfig: O5CgmSensorConfig?
+    /// Thread-safe: written from DeviceDataManager queue, read from BLE queue during pod setup.
+    private let lockedCgmSensorConfig = Locked<O5CgmSensorConfig?>(nil)
+    var o5CgmSensorConfig: O5CgmSensorConfig? {
+        get { lockedCgmSensorConfig.value }
+        set { lockedCgmSensorConfig.value = newValue }
+    }
 
     init(state: OmniPumpManagerState, rileyLinkDeviceProvider: RileyLinkDeviceProvider, dateGenerator: @escaping () -> Date = Date.init) {
         self.lockedState = Locked(state)
@@ -1172,6 +1177,9 @@ extension OmniPumpManager {
             // Reset other miscellaneous state variables that are actually per pod
             state.podAttachmentConfirmed = false
             state.acknowledgedTimeOffsetAlert = false
+
+            // Clear stale O5 pending command so it's not sent to a new pod
+            state.pendingO5LoopState = nil
         }
     }
 
@@ -1485,7 +1493,7 @@ extension OmniPumpManager {
     private func reconcileAidInsulionOnBoard() {
         guard let aidStatus = state.podState?.o5AidStatus,
               let iob = aidStatus.iobUnits,
-              iob > 0 else {
+              iob > 0, iob <= 50.0, iob.isFinite else {
             log.info("AID→Loop switch: no AID IOB to reconcile (iob=%{public}@)",
                      String(describing: state.podState?.o5AidStatus?.iobUnits))
             return
@@ -1597,11 +1605,16 @@ extension OmniPumpManager {
         transport.messageLogger = self
 
         do {
-            // When activating AID, send recent CGM history to accelerate Kalman filter warmup
+            // When activating AID, send recent CGM history to accelerate Kalman filter warmup.
+            // Isolated in its own try/catch: burst failure must never block AID activation.
             if loopState == .closedLoop {
-                let sentCount = try o5NudgeController.sendCgmHistoryBurst(transport: transport)
-                if sentCount > 0 {
-                    log.default("Sent %d CGM history readings before AID activation", sentCount)
+                do {
+                    let sentCount = try o5NudgeController.sendCgmHistoryBurst(transport: transport)
+                    if sentCount > 0 {
+                        log.default("Sent %d CGM history readings before AID activation", sentCount)
+                    }
+                } catch {
+                    log.error("CGM history burst failed (non-blocking): %{public}@", String(describing: error))
                 }
             }
 
@@ -2843,7 +2856,12 @@ extension OmniPumpManager: PumpManager {
     }
 
     public func configureCgmForExternalAlgorithm(cgmIdentifier: String, transmitterId: String) {
-        guard state.podType.isO5 else { return }
+        guard state.podType.isO5, !transmitterId.isEmpty else { return }
+
+        // Skip if already configured with the same sensor
+        if let existing = o5CgmSensorConfig, existing.transmitterId == transmitterId {
+            return
+        }
 
         let sensorType: O5CgmType
         switch cgmIdentifier {
