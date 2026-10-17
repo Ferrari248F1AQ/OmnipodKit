@@ -34,6 +34,12 @@ struct O5TdiCalculator {
     static let maximumGapBeforeExclusion: TimeInterval = 3600 * 6 // 6 hours
     static let recordInterval: TimeInterval = 1800 // 30 min PHB record interval
 
+    /// Minimum TDI value to prevent division by zero in the pod's AID algorithm.
+    /// The pod divides by TDI internally; sending 0 causes undefined behavior.
+    /// 0.1 U/day is the absolute floor; the UInt8 encoding floor is 1.
+    static let minimumTdi: Double = 0.1
+    static let minimumTdiUInt8: UInt8 = 1
+
     /// Main TDI calculation from dose entries.
     /// Mirrors DefaultTdiCoordinator.calculateTDI() from PlatformCore.
     ///
@@ -110,10 +116,13 @@ struct O5TdiCalculator {
             calculatedTdi = (dataTdi * dataWeight) + (seedTdi * (1.0 - dataWeight))
         }
 
-        let clampedTdi = max(1.0, min(255.0, calculatedTdi))
+        // Floor at minimumTdi to prevent division by zero in the pod's AID algorithm.
+        // The UInt8 encoding also needs a separate floor since values < 0.5 round to 0.
+        let clampedTdi = max(minimumTdi, min(255.0, calculatedTdi))
+        let tdiValueUInt8 = max(minimumTdiUInt8, UInt8(clamping: Int(clampedTdi.rounded())))
 
         return O5TdiResult(
-            tdiValue: UInt8(clamping: Int(clampedTdi.rounded())),
+            tdiValue: tdiValueUInt8,
             tdiUnitsDouble: clampedTdi,
             isSufficientData: isSufficient,
             dataSeconds: dataSeconds,

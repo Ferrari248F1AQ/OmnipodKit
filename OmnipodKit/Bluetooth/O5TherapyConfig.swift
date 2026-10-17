@@ -59,7 +59,12 @@ struct O5TherapyConfig {
 
         self.targetBgProfile = O5TherapyConfig.buildTargetProfile(from: glucoseTargetSchedule)
         self.diaHalfHours = O5TherapyConfig.diaToHalfHours(diaHours)
-        self.tdiUnits = UInt8(clamping: Int(totalDailyInsulin.rounded()))
+
+        // Guard against TDI=0 reaching the pod: the pod's AID algorithm divides by TDI,
+        // so a zero value causes undefined behavior. Enforce minimum of 1 in the UInt8 encoding.
+        let safeTdi = max(O5TdiCalculator.minimumTdi, totalDailyInsulin)
+        self.tdiUnits = max(O5TdiCalculator.minimumTdiUInt8, UInt8(clamping: Int(safeTdi.rounded())))
+
         self.insulinHistoryBatches = insulinHistory
     }
 

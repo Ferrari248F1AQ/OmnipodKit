@@ -60,8 +60,8 @@ struct O5TherapyConfigBuilder {
             diaHours = 4.0
         }
 
-        // TDI with sensible default
-        let tdi = totalDailyInsulin ?? 14.0
+        // TDI with sensible default — enforce minimum to prevent division by zero in pod AID algorithm
+        let tdi = max(O5TdiCalculator.minimumTdi, totalDailyInsulin ?? O5TdiCalculator.defaultSeedTdi)
 
         return O5TherapyConfig(
             glucoseTargetSchedule: targetSchedule,

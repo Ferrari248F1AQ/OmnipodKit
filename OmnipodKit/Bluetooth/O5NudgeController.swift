@@ -182,18 +182,26 @@ class O5NudgeController {
                                deliveredUnits: $0.deliveredUnits, isBasal: $0.isBasal) }
         )
 
+        // Guard: never send TDI=0 to the pod — its AID algorithm divides by TDI.
+        let safeTdiValue = max(O5TdiCalculator.minimumTdiUInt8, tdiResult.tdiValue)
+
         // Only send if TDI changed or first calculation
-        if lastTdiSent == nil || lastTdiSent != tdiResult.tdiValue {
+        if lastTdiSent == nil || lastTdiSent != safeTdiValue {
+            if tdiResult.tdiValue == 0 {
+                log.error("TDI calculator returned 0 — clamping to minimum %{public}dU to prevent pod division by zero",
+                          O5TdiCalculator.minimumTdiUInt8)
+            }
+
             log.default("Nudge TDI: sending TDI=%{public}dU (was %{public}@, sufficient=%{public}@)",
-                        tdiResult.tdiValue,
+                        safeTdiValue,
                         lastTdiSent.map(String.init) ?? "nil",
                         String(tdiResult.isSufficientData))
 
-            let binaryPayload = Data([0x00, 0x03, 0x00, tdiResult.tdiValue, 0x00])
+            let binaryPayload = Data([0x00, 0x03, 0x00, safeTdiValue, 0x00])
             let (payload, prefix) = O5AidCommands.TdiCommand.payload(binaryData: binaryPayload)
             let _ = try transport.sendO5AidCommand(payload, responsePrefix: prefix)
 
-            lastTdiSent = tdiResult.tdiValue
+            lastTdiSent = safeTdiValue
         }
 
         lastTdiCalculation = Date()
