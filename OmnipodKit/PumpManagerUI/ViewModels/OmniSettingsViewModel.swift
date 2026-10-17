@@ -614,8 +614,12 @@ class OmniSettingsViewModel: ObservableObject {
         }
 
         let glucose: [GlucoseSample] = []
-        let insulin: [InsulinDelivery] = []
         let carbs: [CarbEntry] = []
+
+        let recentDoses = pumpManager.recentDoseHistory(since: Date().addingTimeInterval(-14 * 86400))
+        let insulin = recentDoses.map {
+            InsulinDelivery(startDate: $0.startDate, endDate: $0.endDate, units: $0.deliveredUnits, isBasal: $0.isBasal, isAutomatic: $0.isBasal)
+        }
 
         regressionReport = O5SmartRegression.analyze(
             glucose: glucose,

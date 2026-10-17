@@ -3835,13 +3835,15 @@ extension OmniPumpManager: PumpManager {
                 return InsulinHistoryEntry(
                     timestamp: dose.startTime,
                     units: dose.units,
-                    isMeal: !dose.automatic
+                    isMeal: !dose.automatic,
+                    isBasal: false
                 )
             case .tempBasal:
                 return InsulinHistoryEntry(
                     timestamp: dose.startTime,
                     units: dose.units,
-                    isMeal: false
+                    isMeal: false,
+                    isBasal: true
                 )
             default:
                 return nil
@@ -4087,7 +4089,7 @@ extension OmniPumpManager: O5NudgeDataSource {
                 startDate: entry.timestamp,
                 endDate: entry.timestamp.addingTimeInterval(1),
                 deliveredUnits: entry.units,
-                isBasal: false
+                isBasal: entry.isBasal
             ))
         }
 

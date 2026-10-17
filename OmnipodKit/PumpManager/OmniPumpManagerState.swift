@@ -567,19 +567,22 @@ struct InsulinHistoryEntry: Codable, Equatable {
     let timestamp: Date
     let units: Double
     let isMeal: Bool
+    let isBasal: Bool
 
     var rawValue: [String: Any] {
         return [
             "timestamp": timestamp.timeIntervalSinceReferenceDate,
             "units": units,
             "isMeal": isMeal,
+            "isBasal": isBasal,
         ]
     }
 
-    init(timestamp: Date, units: Double, isMeal: Bool) {
+    init(timestamp: Date, units: Double, isMeal: Bool, isBasal: Bool = false) {
         self.timestamp = timestamp
         self.units = units
         self.isMeal = isMeal
+        self.isBasal = isBasal
     }
 
     init?(rawValue: [String: Any]) {
@@ -590,6 +593,7 @@ struct InsulinHistoryEntry: Codable, Equatable {
         self.timestamp = Date(timeIntervalSinceReferenceDate: ts)
         self.units = units
         self.isMeal = rawValue["isMeal"] as? Bool ?? false
+        self.isBasal = rawValue["isBasal"] as? Bool ?? false
     }
 }
 
