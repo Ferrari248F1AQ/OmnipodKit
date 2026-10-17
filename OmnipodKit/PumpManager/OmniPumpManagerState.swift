@@ -631,11 +631,11 @@ extension OmniPumpManagerState: CustomDebugStringConvertible {
 }
 
 /// Lightweight record of an insulin delivery event for pod-to-pod history transfer.
-struct InsulinHistoryEntry: Codable, Equatable {
-    let timestamp: Date
-    let units: Double
-    let isMeal: Bool
-    let isBasal: Bool
+public struct InsulinHistoryEntry: Codable, Equatable {
+    public let timestamp: Date
+    public let units: Double
+    public let isMeal: Bool
+    public let isBasal: Bool
 
     var rawValue: [String: Any] {
         return [
@@ -646,7 +646,7 @@ struct InsulinHistoryEntry: Codable, Equatable {
         ]
     }
 
-    init(timestamp: Date, units: Double, isMeal: Bool, isBasal: Bool = false) {
+    public init(timestamp: Date, units: Double, isMeal: Bool, isBasal: Bool = false) {
         self.timestamp = timestamp
         self.units = units
         self.isMeal = isMeal
@@ -666,9 +666,9 @@ struct InsulinHistoryEntry: Codable, Equatable {
 }
 
 /// Lightweight glucose reading for CGM history burst buffer.
-struct GlucoseHistoryEntry: Equatable {
-    let mgdl: Int
-    let date: Date
+public struct GlucoseHistoryEntry: Equatable {
+    public let mgdl: Int
+    public let date: Date
 
     var rawValue: [String: Any] {
         return [
@@ -677,7 +677,7 @@ struct GlucoseHistoryEntry: Equatable {
         ]
     }
 
-    init(mgdl: Int, date: Date) {
+    public init(mgdl: Int, date: Date) {
         self.mgdl = mgdl
         self.date = date
     }
@@ -698,10 +698,10 @@ struct GlucoseHistoryEntry: Equatable {
 }
 
 /// Lightweight carb entry for regression analysis history.
-struct CarbHistoryEntry: Codable, Equatable {
-    let date: Date
-    let grams: Double
-    let absorptionTime: TimeInterval
+public struct CarbHistoryEntry: Codable, Equatable {
+    public let date: Date
+    public let grams: Double
+    public let absorptionTime: TimeInterval
 
     var rawValue: [String: Any] {
         return [
@@ -711,7 +711,7 @@ struct CarbHistoryEntry: Codable, Equatable {
         ]
     }
 
-    init(date: Date, grams: Double, absorptionTime: TimeInterval) {
+    public init(date: Date, grams: Double, absorptionTime: TimeInterval) {
         self.date = date
         self.grams = grams
         self.absorptionTime = absorptionTime
