@@ -57,6 +57,10 @@ class OmniSettingsViewModel: ObservableObject {
 
     @Published var o5AidStatus: O5AidStatus?
 
+    @Published var cgmSensorType: O5CgmType = .none
+    @Published var cgmTransmitterId: String?
+    @Published var isCgmRegisteredOnPod: Bool = false
+
     @Published var regressionReport: RegressionReport?
     @Published var appliedSuggestions: Set<String> = []
     @Published var applyError: String?
@@ -312,6 +316,9 @@ class OmniSettingsViewModel: ObservableObject {
         previousPodDetails = pumpManager.previousPodDetails
         o5AlgorithmMode = pumpManager.o5AlgorithmMode
         o5AidStatus = pumpManager.state.podState?.o5AidStatus
+        cgmSensorType = pumpManager.o5CgmSensorConfig?.sensorType ?? .none
+        cgmTransmitterId = pumpManager.o5CgmSensorConfig?.transmitterId
+        isCgmRegisteredOnPod = pumpManager.o5NudgeController.isCgmSensorRegistered
         controllerId = pumpManager.state.controllerId
         nightscoutURL = pumpManager.state.nightscoutURL ?? ""
         nightscoutToken = pumpManager.state.nightscoutToken ?? ""
@@ -797,6 +804,9 @@ extension OmniSettingsViewModel: PodStateObserver {
         previousPodDetails = self.pumpManager.previousPodDetails
         o5AlgorithmMode = state?.o5AlgorithmMode ?? .loopAlgorithm
         o5AidStatus = state?.o5AidStatus
+        cgmSensorType = pumpManager.o5CgmSensorConfig?.sensorType ?? .none
+        cgmTransmitterId = pumpManager.o5CgmSensorConfig?.transmitterId
+        isCgmRegisteredOnPod = pumpManager.o5NudgeController.isCgmSensorRegistered
     }
  
     func podConnectionStateDidChange(isConnected: Bool) {

@@ -555,6 +555,63 @@ struct OmniSettingsView: View  {
                 )
             }
 
+            // O5 CGM Relay Status
+            if viewModel.isO5Pod {
+                Section(header: SectionHeader(label: LocalizedString("CGM Relay Status", comment: "Section header for CGM relay status"))) {
+                    HStack {
+                        Text(LocalizedString("CGM Sensor", comment: "CGM sensor type label"))
+                        Spacer()
+                        Text(viewModel.cgmSensorType.displayName)
+                            .foregroundColor(.secondary)
+                    }
+                    if let txId = viewModel.cgmTransmitterId, !txId.isEmpty {
+                        HStack {
+                            Text(LocalizedString("Transmitter ID", comment: "Transmitter ID label"))
+                            Spacer()
+                            Text(txId)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    HStack {
+                        Text(LocalizedString("Registered on Pod", comment: "CGM registered on pod label"))
+                        Spacer()
+                        if viewModel.isCgmRegisteredOnPod {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundColor(.green)
+                        } else {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.red)
+                        }
+                    }
+                    if let status = viewModel.o5AidStatus {
+                        if let egv = status.egvValue, egv > 0, let ts = status.egvTimestamp {
+                            HStack {
+                                Text(LocalizedString("Last EGV", comment: "Last EGV value label"))
+                                Spacer()
+                                Text("\(egv) mg/dL")
+                                    .foregroundColor(.secondary)
+                            }
+                            HStack {
+                                Text(LocalizedString("EGV Time", comment: "EGV timestamp label"))
+                                Spacer()
+                                Text(ts, style: .relative)
+                                    .foregroundColor(.secondary)
+                                Text(LocalizedString("ago", comment: "Suffix for relative time"))
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        if let rate = status.egvRate {
+                            HStack {
+                                Text(LocalizedString("Trend", comment: "EGV rate of change label"))
+                                Spacer()
+                                Text(String(format: "%+d mg/dL/5min", rate))
+                                    .foregroundColor(rate > 0 ? .orange : (rate < 0 ? .blue : .secondary))
+                            }
+                        }
+                    }
+                }
+            }
+
             Section(header: SectionHeader(label: LocalizedString("Configuration", comment: "Section header for configuration section")))
             {
                 let reservoirLevel = viewModel.reservoirLevel?.rawValue ?? Pod.reservoirCapacity + Pod.pulseSize
