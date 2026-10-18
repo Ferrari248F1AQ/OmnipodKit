@@ -58,6 +58,8 @@ class OmniSettingsViewModel: ObservableObject {
     @Published var o5AidStatus: O5AidStatus?
 
     @Published var regressionReport: RegressionReport?
+    @Published var appliedSuggestions: Set<String> = []
+    @Published var applyError: String?
     @Published var nightscoutURL: String = ""
     @Published var nightscoutToken: String = ""
     @Published var nightscoutImportStatus: NightscoutImportStatus = .idle
@@ -686,6 +688,7 @@ class OmniSettingsViewModel: ObservableObject {
         let current = pumpManager.currentBasalScheduleItems()
         guard !current.isEmpty else {
             log.error("No current basal schedule available")
+            DispatchQueue.main.async { self.applyError = "No current basal schedule available" }
             return
         }
         let merged = ScheduleMerger.mergeBasal(
@@ -694,11 +697,16 @@ class OmniSettingsViewModel: ObservableObject {
             suggestionEnd: suggestion.endTime,
             newRate: suggestion.suggestedRate
         )
+        let key = "basal-\(suggestion.timeBlock.displayName)"
         pumpManager.applyMergedBasalSchedule(items: merged) { [weak self] error in
-            if let error = error {
-                self?.log.error("Failed to apply basal suggestion: %{public}@", error.localizedDescription)
-            } else {
-                self?.log.default("Basal suggestion applied successfully")
+            DispatchQueue.main.async {
+                if let error = error {
+                    self?.log.error("Failed to apply basal suggestion: %{public}@", error.localizedDescription)
+                    self?.applyError = error.localizedDescription
+                } else {
+                    self?.log.default("Basal suggestion applied successfully")
+                    self?.appliedSuggestions.insert(key)
+                }
             }
         }
     }
@@ -709,6 +717,7 @@ class OmniSettingsViewModel: ObservableObject {
 
         guard let current = cachedISFEntries, !current.isEmpty else {
             log.error("No current ISF schedule available — refresh regression report first")
+            DispatchQueue.main.async { self.applyError = "No current ISF schedule available" }
             return
         }
         let merged = ScheduleMerger.mergeISF(
@@ -717,11 +726,16 @@ class OmniSettingsViewModel: ObservableObject {
             suggestionEnd: suggestion.endTime,
             newISF: suggestion.suggestedISF
         )
+        let key = "isf-\(suggestion.timeBlock.displayName)"
         pumpManager.applyMergedISFSchedule(items: merged) { [weak self] error in
-            if let error = error {
-                self?.log.error("Failed to apply ISF suggestion: %{public}@", error.localizedDescription)
-            } else {
-                self?.log.default("ISF suggestion applied successfully")
+            DispatchQueue.main.async {
+                if let error = error {
+                    self?.log.error("Failed to apply ISF suggestion: %{public}@", error.localizedDescription)
+                    self?.applyError = error.localizedDescription
+                } else {
+                    self?.log.default("ISF suggestion applied successfully")
+                    self?.appliedSuggestions.insert(key)
+                }
             }
         }
     }
@@ -732,6 +746,7 @@ class OmniSettingsViewModel: ObservableObject {
 
         guard let current = cachedICREntries, !current.isEmpty else {
             log.error("No current ICR schedule available — refresh regression report first")
+            DispatchQueue.main.async { self.applyError = "No current ICR schedule available" }
             return
         }
         let merged = ScheduleMerger.mergeICR(
@@ -740,11 +755,16 @@ class OmniSettingsViewModel: ObservableObject {
             suggestionEnd: suggestion.endTime,
             newICR: suggestion.suggestedICR
         )
+        let key = "icr-\(suggestion.timeBlock.displayName)"
         pumpManager.applyMergedCarbRatioSchedule(items: merged) { [weak self] error in
-            if let error = error {
-                self?.log.error("Failed to apply ICR suggestion: %{public}@", error.localizedDescription)
-            } else {
-                self?.log.default("ICR suggestion applied successfully")
+            DispatchQueue.main.async {
+                if let error = error {
+                    self?.log.error("Failed to apply ICR suggestion: %{public}@", error.localizedDescription)
+                    self?.applyError = error.localizedDescription
+                } else {
+                    self?.log.default("ICR suggestion applied successfully")
+                    self?.appliedSuggestions.insert(key)
+                }
             }
         }
     }

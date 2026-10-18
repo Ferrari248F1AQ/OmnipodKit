@@ -683,7 +683,9 @@ struct OmniSettingsView: View  {
                                     onApplyBasal: { viewModel.applyBasalSuggestion($0) },
                                     onApplyISF: { viewModel.applyISFSuggestion($0) },
                                     onApplyICR: { viewModel.applyICRSuggestion($0) },
-                                    onApplyAll: { viewModel.applyAllSuggestions(report: report) }
+                                    onApplyAll: { viewModel.applyAllSuggestions(report: report) },
+                                    appliedSuggestions: viewModel.appliedSuggestions,
+                                    applyError: $viewModel.applyError
                                 )
                             } else {
                                 ProgressView()

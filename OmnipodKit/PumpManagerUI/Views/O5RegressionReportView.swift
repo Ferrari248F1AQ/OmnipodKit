@@ -16,6 +16,8 @@ struct O5RegressionReportView: View {
     var onApplyISF: (ISFSuggestion) -> Void
     var onApplyICR: (ICRSuggestion) -> Void
     var onApplyAll: () -> Void
+    var appliedSuggestions: Set<String>
+    @Binding var applyError: String?
 
     @State private var expandedSection: ReportSection?
 
@@ -93,6 +95,16 @@ struct O5RegressionReportView: View {
         }
         .listStyle(InsetGroupedListStyle())
         .navigationTitle(LocalizedString("Therapy Insights", comment: "Regression report navigation title"))
+        .alert(isPresented: Binding<Bool>(
+            get: { applyError != nil },
+            set: { if !$0 { applyError = nil } }
+        )) {
+            Alert(
+                title: Text(LocalizedString("Apply Failed", comment: "Alert title when suggestion apply fails")),
+                message: Text(applyError ?? ""),
+                dismissButton: .default(Text(LocalizedString("OK", comment: "OK button")))
+            )
+        }
     }
 
     private var totalSuggestions: Int {
@@ -238,12 +250,9 @@ struct O5RegressionReportView: View {
                     .foregroundColor(suggestion.changePercent > 0 ? .orange : .green)
             }
 
-            Button(action: { onApplyBasal(suggestion) }) {
-                Text(LocalizedString("Apply", comment: "Apply single suggestion"))
-                    .font(.caption)
-                    .fontWeight(.medium)
+            applyButton(key: "basal-\(suggestion.timeBlock.displayName)") {
+                onApplyBasal(suggestion)
             }
-            .buttonStyle(BorderlessButtonStyle())
         }
         .padding(.vertical, 4)
     }
@@ -277,12 +286,9 @@ struct O5RegressionReportView: View {
                     .foregroundColor(.purple)
             }
 
-            Button(action: { onApplyISF(suggestion) }) {
-                Text(LocalizedString("Apply", comment: "Apply single suggestion"))
-                    .font(.caption)
-                    .fontWeight(.medium)
+            applyButton(key: "isf-\(suggestion.timeBlock.displayName)") {
+                onApplyISF(suggestion)
             }
-            .buttonStyle(BorderlessButtonStyle())
         }
         .padding(.vertical, 4)
     }
@@ -316,14 +322,36 @@ struct O5RegressionReportView: View {
                     .foregroundColor(.green)
             }
 
-            Button(action: { onApplyICR(suggestion) }) {
-                Text(LocalizedString("Apply", comment: "Apply single suggestion"))
-                    .font(.caption)
-                    .fontWeight(.medium)
+            applyButton(key: "icr-\(suggestion.timeBlock.displayName)") {
+                onApplyICR(suggestion)
             }
-            .buttonStyle(BorderlessButtonStyle())
         }
         .padding(.vertical, 4)
+    }
+
+    // MARK: - Apply Button
+
+    private func applyButton(key: String, action: @escaping () -> Void) -> some View {
+        Group {
+            if appliedSuggestions.contains(key) {
+                HStack(spacing: 4) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(.green)
+                        .font(.caption)
+                    Text(LocalizedString("Applied", comment: "Applied suggestion label"))
+                        .font(.caption)
+                        .fontWeight(.medium)
+                        .foregroundColor(.green)
+                }
+            } else {
+                Button(action: action) {
+                    Text(LocalizedString("Apply", comment: "Apply single suggestion"))
+                        .font(.caption)
+                        .fontWeight(.medium)
+                }
+                .buttonStyle(BorderlessButtonStyle())
+            }
+        }
     }
 
     // MARK: - Helpers
