@@ -43,6 +43,7 @@ enum PodCommsError: Error {
     case tooManyPodsFound // BLE pods only
     case setupNotComplete
     case noCertificateFound // O5 only
+    case podIsNotO5
 }
 
 extension PodCommsError: LocalizedError {
@@ -115,6 +116,8 @@ extension PodCommsError: LocalizedError {
             return LocalizedString("Pod setup is not complete", comment: "Error description when pod setup is not complete")
         case .noCertificateFound:
             return LocalizedString("No certificate found", comment: "Error message when no certificate found")
+        case .podIsNotO5:
+            return LocalizedString("This command requires an Omnipod 5", comment: "Error message when O5-only command is sent to non-O5 pod")
         }
     }
 
@@ -189,6 +192,8 @@ extension PodCommsError: LocalizedError {
             return nil
         case .noCertificateFound:
             return LocalizedString("Retrieve an Omnipod 5 Pod Certificate to continue.", comment: "Recovery suggestion with missing certificate")
+        case .podIsNotO5:
+            return nil
         }
     }
 
@@ -1201,6 +1206,18 @@ class PodCommsSession: MessageTransportDelegate {
 
     func assertOnSessionQueue() {
         self.transport.assertOnSessionQueue()
+    }
+
+    // MARK: - O5 AID Commands
+
+    /// Sends an O5 AID loop state command to the pod.
+    /// Only works with BLE pods (Omnipod 5); throws on Eros pods.
+    func setO5AidLoopState(_ state: O5LoopStateValue) throws {
+        guard let bleTransport = transport as? BlePodMessageTransport else {
+            throw PodCommsError.podIsNotO5
+        }
+        let (payload, prefix) = O5AidCommands.AidLoopStateCommand.set(state: state)
+        let _ = try bleTransport.sendO5AidCommand(payload, responsePrefix: prefix)
     }
 
     func messageTransport(_ messageTransport: any MessageTransport, didUpdate state: any MessageTransportState) {

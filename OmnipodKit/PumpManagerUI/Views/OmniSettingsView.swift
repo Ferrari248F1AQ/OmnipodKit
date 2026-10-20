@@ -631,7 +631,7 @@ struct OmniSettingsView: View  {
                             if let report = viewModel.regressionReport {
                                 O5RegressionReportView(
                                     report: report,
-                                    onApplyBasal: { viewModel.applyBasalSuggestion($0) },
+                                    onApplyBasal: { viewModel.applyBasalSuggestions([$0]) },
                                     onApplyISF: { viewModel.applyISFSuggestion($0) },
                                     onApplyICR: { viewModel.applyICRSuggestion($0) },
                                     onApplyAll: { viewModel.applyAllSuggestions(report: report) }

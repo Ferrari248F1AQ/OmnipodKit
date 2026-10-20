@@ -15,6 +15,13 @@ import Combine
 import os.log
 
 
+/// Data provider for the regression model. Loop's presenting controller
+/// implements this to feed glucose and carb data from its stores.
+protocol RegressionDataProvider: AnyObject {
+    func recentGlucoseSamples() -> [GlucoseSample]
+    func recentCarbEntries() -> [CarbEntry]
+}
+
 enum OmniSettingsViewAlert {
     case suspendError(Error)
     case resumeError(Error)
@@ -596,20 +603,33 @@ class OmniSettingsViewModel: ObservableObject {
         o5AlgorithmMode = mode
     }
 
+    /// Optional provider for glucose and carb data from Loop's stores.
+    /// Set by the presenting coordinator when it has access to GlucoseStore and CarbStore.
+    var regressionDataProvider: RegressionDataProvider?
+
     func refreshRegressionReport() {
-        let basalSchedule = pumpManager.state.podState?.glucoseTargetSchedule?.map {
-            (startTime: $0.startTime, rate: $0.value)
-        } ?? [(startTime: 0, rate: 1.0)]
+        let basalEntries = pumpManager.state.basalSchedule.entries
+        let basalSchedule = basalEntries.map {
+            (startTime: $0.startTime, rate: $0.rate)
+        }
 
-        let isfSchedule = pumpManager.state.podState?.correctionFactorSchedule?.map {
-            (startTime: $0.startTime, mgdlPerUnit: $0.value)
-        } ?? [(startTime: 0, mgdlPerUnit: 50.0)]
-
+        let isfSchedule: [(startTime: TimeInterval, mgdlPerUnit: Double)] = [(startTime: 0, mgdlPerUnit: 50.0)]
         let icrSchedule: [(startTime: TimeInterval, gramsPerUnit: Double)] = [(startTime: 0, gramsPerUnit: 10.0)]
 
-        let glucose: [GlucoseSample] = []
-        let insulin: [InsulinDelivery] = []
-        let carbs: [CarbEntry] = []
+        // Build insulin data from the rolling 14-day history buffer
+        let insulin: [InsulinDelivery] = pumpManager.state.recentInsulinHistory.map { entry in
+            InsulinDelivery(
+                startDate: entry.timestamp,
+                endDate: entry.timestamp,
+                units: entry.units,
+                isBasal: false,
+                isAutomatic: false
+            )
+        }
+
+        // Use external data provider if available, otherwise empty
+        let glucose = regressionDataProvider?.recentGlucoseSamples() ?? []
+        let carbs = regressionDataProvider?.recentCarbEntries() ?? []
 
         regressionReport = O5SmartRegression.analyze(
             glucose: glucose,
@@ -621,23 +641,29 @@ class OmniSettingsViewModel: ObservableObject {
         )
     }
 
-    func applyBasalSuggestion(_ suggestion: BasalSuggestion) {
-        log.default("Applying basal suggestion: %.2f U/hr for time block %@",
-                    suggestion.suggestedRate, suggestion.timeBlock.displayName)
+    func applyBasalSuggestions(_ suggestions: [BasalSuggestion]) {
+        guard !suggestions.isEmpty else { return }
+        let currentEntries = pumpManager.state.basalSchedule.entries
+        let items = currentEntries.map { RepeatingScheduleValue(startTime: $0.startTime, value: $0.rate) }
+        let schedule = BasalRateSchedule(dailyItems: items, timeZone: .current)
+        pumpManager.applyRegressionBasalSuggestions(suggestions, currentSchedule: schedule)
+        log.default("Applied %d basal suggestions to Loop therapy settings", suggestions.count)
     }
 
     func applyISFSuggestion(_ suggestion: ISFSuggestion) {
-        log.default("Applying ISF suggestion: %.0f mg/dL/U for time block %@",
+        log.default("ISF suggestion: %.0f mg/dL/U for %@ — must be applied manually in Loop Settings > Insulin Sensitivities",
                     suggestion.suggestedISF, suggestion.timeBlock.displayName)
     }
 
     func applyICRSuggestion(_ suggestion: ICRSuggestion) {
-        log.default("Applying ICR suggestion: %.0f g/U for time block %@",
+        log.default("ICR suggestion: %.0f g/U for %@ — must be applied manually in Loop Settings > Carb Ratios",
                     suggestion.suggestedICR, suggestion.timeBlock.displayName)
     }
 
     func applyAllSuggestions(report: RegressionReport) {
-        for s in report.basalSuggestions { applyBasalSuggestion(s) }
+        applyBasalSuggestions(report.basalSuggestions)
+        // ISF and ICR cannot be set programmatically from the pump manager.
+        // Log the values so the user can apply them manually.
         for s in report.isfSuggestions { applyISFSuggestion(s) }
         for s in report.icrSuggestions { applyICRSuggestion(s) }
     }

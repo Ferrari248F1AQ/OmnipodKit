@@ -1402,19 +1402,14 @@ extension OmniPumpManager {
 
         // SAFETY: reject the switch if there is any active insulin delivery in progress
         if let podState = state.podState {
-            // Check for an unfinalized (in-progress) bolus
             if let bolus = podState.unfinalizedBolus, !bolus.isFinished() {
                 log.error("Algorithm switch rejected: active bolus in progress")
                 throw OmniPumpManagerError.activeDeliveryDuringAlgorithmSwitch
             }
-            // Check for an unfinalized (in-progress) temp basal
             if let tempBasal = podState.unfinalizedTempBasal, !tempBasal.isFinished() {
                 log.error("Algorithm switch rejected: active temp basal in progress")
                 throw OmniPumpManagerError.activeDeliveryDuringAlgorithmSwitch
             }
-            // Also check the last known pod delivery status for bolus/temp basal activity.
-            // This catches cases where the pod is delivering but our local state hasn't
-            // been updated yet (e.g. after a comms interruption).
             if let deliveryStatus = podState.lastDeliveryStatusReceived {
                 if deliveryStatus.bolusing {
                     log.error("Algorithm switch rejected: pod reports active bolus (deliveryStatus: %{public}@)", String(describing: deliveryStatus))
@@ -1427,8 +1422,70 @@ extension OmniPumpManager {
             }
         }
 
+        let previousMode = o5AlgorithmMode
         setState { state in
             state.updateO5AlgorithmMode(mode)
+        }
+
+        // Send loop state command to the pod via BLE session
+        let loopState: O5LoopStateValue = (mode == .insuletAID) ? .closedLoop : .inactive
+        self.runSession(withName: "Set AID loop state") { [weak self] result in
+            guard let self = self else { return }
+            switch result {
+            case .success(let session):
+                do {
+                    try session.setO5AidLoopState(loopState)
+                    self.log.default("Pod AID loop state set to %d (%{public}@)", loopState.rawValue, String(describing: mode))
+                } catch {
+                    self.log.error("Failed to set pod AID loop state: %{public}@. Reverting to %{public}@", String(describing: error), String(describing: previousMode))
+                    self.setState { state in
+                        state.updateO5AlgorithmMode(previousMode)
+                    }
+                }
+            case .failure(let error):
+                self.log.error("Session failed for AID loop state: %{public}@. Reverting to %{public}@", String(describing: error), String(describing: previousMode))
+                self.setState { state in
+                    state.updateO5AlgorithmMode(previousMode)
+                }
+            }
+        }
+    }
+
+    /// Applies regression basal suggestions by building a new BasalRateSchedule
+    /// and requesting the change through Loop's PumpManagerDelegate.
+    func applyRegressionBasalSuggestions(_ suggestions: [BasalSuggestion], currentSchedule: BasalRateSchedule?) {
+        guard !suggestions.isEmpty else { return }
+
+        var items: [RepeatingScheduleValue<Double>]
+        if let current = currentSchedule {
+            items = current.items
+        } else {
+            items = [RepeatingScheduleValue(startTime: 0, value: 1.0)]
+        }
+
+        for suggestion in suggestions {
+            // Find and update matching schedule entries by startTime
+            for i in items.indices {
+                if items[i].startTime >= suggestion.startTime && items[i].startTime < suggestion.endTime {
+                    items[i] = RepeatingScheduleValue(startTime: items[i].startTime, value: suggestion.suggestedRate)
+                }
+            }
+        }
+
+        let timeZone = currentSchedule?.timeZone ?? .current
+        guard let newSchedule = BasalRateSchedule(dailyItems: items, timeZone: timeZone) else {
+            log.error("Failed to build BasalRateSchedule from regression suggestions")
+            return
+        }
+
+        pumpDelegate.notify { delegate in
+            delegate?.pumpManager(self, didRequestBasalRateScheduleChange: newSchedule) { error in
+                if let error = error {
+                    self.log.error("Loop rejected basal schedule change: %{public}@", String(describing: error))
+                } else {
+                    self.log.default("Regression basal schedule applied to Loop")
+                }
+            }
         }
     }
 
