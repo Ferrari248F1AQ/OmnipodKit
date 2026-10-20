@@ -624,32 +624,6 @@ struct OmniSettingsView: View  {
                     }
                 }
 
-                // O5 Therapy Insights (15-day regression report)
-                if viewModel.isO5Pod {
-                    NavigationLink(destination:
-                        Group {
-                            if let report = viewModel.regressionReport {
-                                O5RegressionReportView(
-                                    report: report,
-                                    onApplyBasal: { viewModel.applyBasalSuggestions([$0]) },
-                                    onApplyISF: { viewModel.applyISFSuggestion($0) },
-                                    onApplyICR: { viewModel.applyICRSuggestion($0) },
-                                    onApplyAll: { viewModel.applyAllSuggestions(report: report) }
-                                )
-                            } else {
-                                ProgressView()
-                                    .onAppear { viewModel.refreshRegressionReport() }
-                            }
-                        }
-                    ) {
-                        HStack {
-                            Image(systemName: "chart.line.uptrend.xyaxis")
-                                .foregroundColor(.purple)
-                            Text(LocalizedString("Therapy Insights", comment: "Regression report navigation link"))
-                                .foregroundColor(Color.primary)
-                        }
-                    }
-                }
             }
 
             Section() {

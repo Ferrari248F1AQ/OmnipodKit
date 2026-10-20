@@ -1451,44 +1451,6 @@ extension OmniPumpManager {
         }
     }
 
-    /// Applies regression basal suggestions by building a new BasalRateSchedule
-    /// and requesting the change through Loop's PumpManagerDelegate.
-    func applyRegressionBasalSuggestions(_ suggestions: [BasalSuggestion], currentSchedule: BasalRateSchedule?) {
-        guard !suggestions.isEmpty else { return }
-
-        var items: [RepeatingScheduleValue<Double>]
-        if let current = currentSchedule {
-            items = current.items
-        } else {
-            items = [RepeatingScheduleValue(startTime: 0, value: 1.0)]
-        }
-
-        for suggestion in suggestions {
-            // Find and update matching schedule entries by startTime
-            for i in items.indices {
-                if items[i].startTime >= suggestion.startTime && items[i].startTime < suggestion.endTime {
-                    items[i] = RepeatingScheduleValue(startTime: items[i].startTime, value: suggestion.suggestedRate)
-                }
-            }
-        }
-
-        let timeZone = currentSchedule?.timeZone ?? .current
-        guard let newSchedule = BasalRateSchedule(dailyItems: items, timeZone: timeZone) else {
-            log.error("Failed to build BasalRateSchedule from regression suggestions")
-            return
-        }
-
-        pumpDelegate.notify { delegate in
-            delegate?.pumpManager(self, didRequestBasalRateScheduleChange: newSchedule) { error in
-                if let error = error {
-                    self.log.error("Loop rejected basal schedule change: %{public}@", String(describing: error))
-                } else {
-                    self.log.default("Regression basal schedule applied to Loop")
-                }
-            }
-        }
-    }
-
     /// Whether the Insulet on-pod AID algorithm is currently controlling dosing.
     var isO5AidActive: Bool {
         return state.podType.isO5 && o5AlgorithmMode == .insuletAID
